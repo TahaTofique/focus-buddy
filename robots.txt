@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://tahatofique.github.io/Portfolio/sitemap.xml

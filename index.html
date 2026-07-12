@@ -80,6 +80,18 @@
         <span class="metric-label">PHONE FLAGS</span>
         <span id="m-phone" class="metric-value">--</span>
       </div>
+      <div class="metric">
+        <span class="metric-label">EYES CLOSED</span>
+        <span id="m-eyes" class="metric-value">--</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">TALKING</span>
+        <span id="m-talking" class="metric-value">--</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">MOVEMENT</span>
+        <span id="m-movement" class="metric-value">--</span>
+      </div>
     </div>
 
     <div class="chart-wrap">
@@ -90,10 +102,10 @@
     <div class="history-table-wrap">
       <table id="history-table">
         <thead>
-          <tr><th>DATE</th><th>LABEL</th><th>AVG</th><th>MINS</th><th>PHONE</th></tr>
+          <tr><th>DATE</th><th>LABEL</th><th>AVG</th><th>MINS</th><th>PHONE</th><th>EYES</th><th>TALK</th><th>MOVE</th></tr>
         </thead>
         <tbody id="history-body">
-          <tr><td colspan="5" class="empty-row">no sessions logged yet</td></tr>
+          <tr><td colspan="8" class="empty-row">no sessions logged yet</td></tr>
         </tbody>
       </table>
     </div>
@@ -109,6 +121,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
 <script src="db.js"></script>
 <script src="scorer.js"></script>
+<script src="signals.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

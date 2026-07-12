@@ -64,16 +64,19 @@ const FocusDB = (() => {
     });
   }
 
-  async function logTick(sessionId, facePresent, lookingAtScreen, phoneDetected, focusScore) {
+  async function logTick(sessionId, signals, focusScore) {
     const db = await open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("ticks", "readwrite");
       tx.objectStore("ticks").add({
         sessionId,
         ts: Date.now(),
-        facePresent,
-        lookingAtScreen,
-        phoneDetected,
+        facePresent: !!signals.facePresent,
+        lookingAtScreen: !!signals.lookingAtScreen,
+        phoneDetected: !!signals.phoneDetected,
+        eyesClosed: !!signals.eyesClosed,
+        talking: !!signals.talking,
+        excessiveMovement: !!signals.excessiveMovement,
         focusScore,
       });
       tx.oncomplete = () => resolve();
@@ -104,14 +107,20 @@ const FocusDB = (() => {
 
   function summarize(ticks) {
     if (!ticks.length) {
-      return { n: 0, avgScore: 0, pctPresent: 0, pctLooking: 0, phonePickups: 0 };
+      return {
+        n: 0, avgScore: 0, pctPresent: 0, pctLooking: 0,
+        phonePickups: 0, eyesClosedSecs: 0, talkingSecs: 0, movementSecs: 0,
+      };
     }
     const n = ticks.length;
     const avgScore = ticks.reduce((s, t) => s + t.focusScore, 0) / n;
     const pctPresent = ticks.filter((t) => t.facePresent).length / n;
     const pctLooking = ticks.filter((t) => t.lookingAtScreen).length / n;
     const phonePickups = ticks.filter((t) => t.phoneDetected).length;
-    return { n, avgScore, pctPresent, pctLooking, phonePickups };
+    const eyesClosedSecs = ticks.filter((t) => t.eyesClosed).length;
+    const talkingSecs = ticks.filter((t) => t.talking).length;
+    const movementSecs = ticks.filter((t) => t.excessiveMovement).length;
+    return { n, avgScore, pctPresent, pctLooking, phonePickups, eyesClosedSecs, talkingSecs, movementSecs };
   }
 
   async function clearAll() {

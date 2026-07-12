@@ -38,6 +38,7 @@ const humanConfig = {
 // ---------- State ----------
 let human = null;
 let scorer = new FocusScorer();
+let signalTracker = new SignalTracker();
 let currentSessionId = null;
 let sessionTimer = null;
 let sessionEndAt = null;
@@ -63,6 +64,9 @@ const mAvg = document.getElementById("m-avg");
 const mPresent = document.getElementById("m-present");
 const mLooking = document.getElementById("m-looking");
 const mPhone = document.getElementById("m-phone");
+const mEyes = document.getElementById("m-eyes");
+const mTalking = document.getElementById("m-talking");
+const mMovement = document.getElementById("m-movement");
 const historyBody = document.getElementById("history-body");
 const clockEl = document.getElementById("clock");
 const clearDataLink = document.getElementById("clear-data");
@@ -203,14 +207,27 @@ async function detectLoop() {
     phoneStreak = rawPhone ? phoneStreak + 1 : 0;
     const phoneDetected = phoneStreak >= PHONE_HOLD_FRAMES;
 
-    const score = scorer.update(facePresent, lookingAtScreen, phoneDetected);
-    updateLiveUI(score, facePresent, lookingAtScreen, phoneDetected);
+    const mesh = face?.mesh || null;
+    const box = face?.box || null;
+    const behavioral = signalTracker.update(mesh, box);
+
+    const signals = {
+      facePresent,
+      lookingAtScreen,
+      phoneDetected,
+      eyesClosed: behavioral.eyesClosed,
+      talking: behavioral.talking,
+      excessiveMovement: behavioral.excessiveMovement,
+    };
+
+    const score = scorer.update(signals);
+    updateLiveUI(score, signals);
     drawOverlay(result);
 
     const now = Date.now();
     if (currentSessionId && now - lastLogAt >= LOG_INTERVAL_MS) {
       lastLogAt = now;
-      await FocusDB.logTick(currentSessionId, facePresent, lookingAtScreen, phoneDetected, score);
+      await FocusDB.logTick(currentSessionId, signals, score);
       pushChartPoint(score);
     }
   } catch (err) {
@@ -219,13 +236,17 @@ async function detectLoop() {
   requestAnimationFrame(detectLoop);
 }
 
-function updateLiveUI(score, facePresent, lookingAtScreen, phoneDetected) {
+function updateLiveUI(score, signals) {
   scoreValue.textContent = Math.round(score);
   let label, cls;
-  if (phoneDetected) { label = "PHONE"; cls = "phone"; }
-  else if (!facePresent) { label = "NO FACE"; cls = "noface"; }
-  else if (lookingAtScreen) { label = "FOCUSED"; cls = "focused"; }
-  else { label = "AWAY"; cls = "away"; }
+  // Priority order: most severe / most specific signal wins the badge.
+  if (signals.phoneDetected) { label = "PHONE"; cls = "phone"; }
+  else if (!signals.facePresent) { label = "NO FACE"; cls = "noface"; }
+  else if (signals.eyesClosed) { label = "EYES CLOSED"; cls = "phone"; }
+  else if (!signals.lookingAtScreen) { label = "LOOKING AWAY"; cls = "away"; }
+  else if (signals.talking) { label = "TALKING"; cls = "away"; }
+  else if (signals.excessiveMovement) { label = "RESTLESS"; cls = "away"; }
+  else { label = "FOCUSED"; cls = "focused"; }
   stateBadge.textContent = label;
   stateBadge.className = "state-badge " + cls;
 }
@@ -235,6 +256,7 @@ async function startSession() {
   await startWebcam();
   currentSessionId = await FocusDB.startSession(labelInput.value.trim());
   scorer = new FocusScorer();
+  signalTracker.reset();
   phoneStreak = 0;
   lastLogAt = 0;
   chartLabels.length = 0;
@@ -287,12 +309,15 @@ async function refreshSummaryFor(sessionId) {
   mPresent.textContent = s.n ? Math.round(s.pctPresent * 100) + "%" : "--";
   mLooking.textContent = s.n ? Math.round(s.pctLooking * 100) + "%" : "--";
   mPhone.textContent = s.n ? s.phonePickups : "--";
+  mEyes.textContent = s.n ? s.eyesClosedSecs + "s" : "--";
+  mTalking.textContent = s.n ? s.talkingSecs + "s" : "--";
+  mMovement.textContent = s.n ? s.movementSecs + "s" : "--";
 }
 
 async function refreshHistory() {
   const sessions = await FocusDB.getSessions();
   if (!sessions.length) {
-    historyBody.innerHTML = '<tr><td colspan="5" class="empty-row">no sessions logged yet</td></tr>';
+    historyBody.innerHTML = '<tr><td colspan="8" class="empty-row">no sessions logged yet</td></tr>';
     return;
   }
   const rows = await Promise.all(sessions.map(async (s) => {
@@ -308,6 +333,9 @@ async function refreshHistory() {
       <td>${sum.n ? Math.round(sum.avgScore) : "--"}</td>
       <td>${mins}</td>
       <td>${sum.phonePickups}</td>
+      <td>${sum.eyesClosedSecs}s</td>
+      <td>${sum.talkingSecs}s</td>
+      <td>${sum.movementSecs}s</td>
     </tr>`;
   }));
   historyBody.innerHTML = rows.join("");
@@ -325,6 +353,7 @@ clearDataLink.addEventListener("click", async () => {
   await FocusDB.clearAll();
   await refreshHistory();
   mAvg.textContent = mPresent.textContent = mLooking.textContent = mPhone.textContent = "--";
+  mEyes.textContent = mTalking.textContent = mMovement.textContent = "--";
 });
 
 // ---------- Init ----------

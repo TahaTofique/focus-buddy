@@ -359,3 +359,4 @@ tbody td {
   text-decoration: underline;
 }
 .link:hover { color: var(--lime); }
+.link.small { font-size: 10px; letter-spacing: 0.5px; text-transform: none; }

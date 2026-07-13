@@ -42,12 +42,16 @@ let signalTracker = new SignalTracker();
 let currentSessionId = null;
 let sessionTimer = null;
 let sessionEndAt = null;
-let lastLogAt = 0;
 let phoneStreak = 0;
 let running = false;
 let liveChart = null;
+let tabAway = false;
 const chartLabels = [];
 const chartData = [];
+
+document.addEventListener("visibilitychange", () => {
+  tabAway = document.hidden;
+});
 
 // ---------- DOM ----------
 const video = document.getElementById("video");
@@ -59,6 +63,8 @@ const stateBadge = document.getElementById("state-badge");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const labelInput = document.getElementById("session-label");
+const modeSelect = document.getElementById("mode-select");
+const modeHint = document.getElementById("mode-hint");
 const durationSelect = document.getElementById("duration-select");
 const mAvg = document.getElementById("m-avg");
 const mPresent = document.getElementById("m-present");
@@ -66,10 +72,28 @@ const mLooking = document.getElementById("m-looking");
 const mPhone = document.getElementById("m-phone");
 const mEyes = document.getElementById("m-eyes");
 const mTalking = document.getElementById("m-talking");
+const mTalkingLabel = document.getElementById("m-talking-label");
 const mMovement = document.getElementById("m-movement");
+const mTabAway = document.getElementById("m-tabaway");
 const historyBody = document.getElementById("history-body");
 const clockEl = document.getElementById("clock");
 const clearDataLink = document.getElementById("clear-data");
+const exportCsvLink = document.getElementById("export-csv");
+
+const MODE_HINTS = {
+  study: "Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.",
+  meeting: "Meeting mode: speaking is not penalized. Switching to other browser tabs during the session is tracked as the main distraction signal.",
+};
+
+function applyModeUI() {
+  const mode = modeSelect.value;
+  modeHint.textContent = MODE_HINTS[mode];
+  mTalkingLabel.textContent = mode === "meeting" ? "SPEAKING" : "TALKING";
+  labelInput.placeholder = mode === "meeting"
+    ? "meeting/lecture title (e.g. Sprint standup)"
+    : "session label (e.g. SDA assignment)";
+}
+modeSelect.addEventListener("change", applyModeUI);
 
 // ---------- Clock ----------
 function tickClock() {
@@ -195,6 +219,15 @@ function drawOverlay(result) {
 }
 
 // ---------- Main loop ----------
+// Cache of the most recent face-based signals. rAF stalls when the tab is
+// hidden, so a separate setInterval (below) keeps logging on that cadence,
+// reusing these cached values but overriding with the live tabAway flag —
+// this is what lets "switched tabs mid-meeting" actually get captured.
+let lastFaceSignals = {
+  facePresent: false, lookingAtScreen: false, phoneDetected: false,
+  eyesClosed: false, talking: false, excessiveMovement: false,
+};
+
 async function detectLoop() {
   if (!running) return;
   try {
@@ -211,7 +244,7 @@ async function detectLoop() {
     const box = face?.box || null;
     const behavioral = signalTracker.update(mesh, box);
 
-    const signals = {
+    lastFaceSignals = {
       facePresent,
       lookingAtScreen,
       phoneDetected,
@@ -220,32 +253,45 @@ async function detectLoop() {
       excessiveMovement: behavioral.excessiveMovement,
     };
 
-    const score = scorer.update(signals);
-    updateLiveUI(score, signals);
+    applyStateBadge({ ...lastFaceSignals, tabAway });
     drawOverlay(result);
-
-    const now = Date.now();
-    if (currentSessionId && now - lastLogAt >= LOG_INTERVAL_MS) {
-      lastLogAt = now;
-      await FocusDB.logTick(currentSessionId, signals, score);
-      pushChartPoint(score);
-    }
   } catch (err) {
     console.error("Detection frame error:", err);
   }
   requestAnimationFrame(detectLoop);
 }
 
-function updateLiveUI(score, signals) {
+// Single canonical scoring/logging tick — runs on a plain setInterval
+// (not rAF) so it keeps firing even while the tab is hidden, which is
+// exactly the period we need to capture in meeting mode.
+let scoreTickInterval = null;
+function scoreTick() {
+  if (!running) return;
+  const signals = { ...lastFaceSignals, tabAway };
+  const score = scorer.update(signals);
+  updateScoreDisplay(score, signals);
+
+  if (currentSessionId) {
+    FocusDB.logTick(currentSessionId, signals, score).catch((e) => console.error(e));
+    pushChartPoint(score);
+  }
+}
+
+function updateScoreDisplay(score, signals) {
   scoreValue.textContent = Math.round(score);
+  applyStateBadge(signals);
+}
+
+function applyStateBadge(signals) {
   let label, cls;
-  // Priority order: most severe / most specific signal wins the badge.
-  if (signals.phoneDetected) { label = "PHONE"; cls = "phone"; }
+  if (signals.tabAway) { label = "TAB SWITCH"; cls = "phone"; }
+  else if (signals.phoneDetected) { label = "PHONE"; cls = "phone"; }
   else if (!signals.facePresent) { label = "NO FACE"; cls = "noface"; }
   else if (signals.eyesClosed) { label = "EYES CLOSED"; cls = "phone"; }
   else if (!signals.lookingAtScreen) { label = "LOOKING AWAY"; cls = "away"; }
-  else if (signals.talking) { label = "TALKING"; cls = "away"; }
   else if (signals.excessiveMovement) { label = "RESTLESS"; cls = "away"; }
+  else if (signals.talking && scorer.weights.talkingPenalty > 0) { label = "TALKING"; cls = "away"; }
+  else if (signals.talking) { label = "SPEAKING"; cls = "focused"; }
   else { label = "FOCUSED"; cls = "focused"; }
   stateBadge.textContent = label;
   stateBadge.className = "state-badge " + cls;
@@ -254,11 +300,12 @@ function updateLiveUI(score, signals) {
 // ---------- Session control ----------
 async function startSession() {
   await startWebcam();
-  currentSessionId = await FocusDB.startSession(labelInput.value.trim());
-  scorer = new FocusScorer();
+  const mode = modeSelect.value;
+  currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode);
+  scorer = new FocusScorer({ mode });
   signalTracker.reset();
   phoneStreak = 0;
-  lastLogAt = 0;
+  tabAway = document.hidden;
   chartLabels.length = 0;
   chartData.length = 0;
   liveChart.update("none");
@@ -267,6 +314,7 @@ async function startSession() {
   startBtn.disabled = true;
   stopBtn.disabled = false;
   labelInput.disabled = true;
+  modeSelect.disabled = true;
   durationSelect.disabled = true;
 
   const durationMin = parseFloat(durationSelect.value);
@@ -276,11 +324,13 @@ async function startSession() {
   }
 
   detectLoop();
+  scoreTickInterval = setInterval(scoreTick, LOG_INTERVAL_MS);
 }
 
 async function stopSession() {
   running = false;
   if (sessionTimer) clearTimeout(sessionTimer);
+  if (scoreTickInterval) clearInterval(scoreTickInterval);
   stopWebcam();
   octx.clearRect(0, 0, overlay.width, overlay.height);
 
@@ -293,6 +343,7 @@ async function stopSession() {
   startBtn.disabled = false;
   stopBtn.disabled = true;
   labelInput.disabled = false;
+  modeSelect.disabled = false;
   durationSelect.disabled = false;
   scoreValue.textContent = "--";
   stateBadge.textContent = "STANDBY";
@@ -312,12 +363,13 @@ async function refreshSummaryFor(sessionId) {
   mEyes.textContent = s.n ? s.eyesClosedSecs + "s" : "--";
   mTalking.textContent = s.n ? s.talkingSecs + "s" : "--";
   mMovement.textContent = s.n ? s.movementSecs + "s" : "--";
+  mTabAway.textContent = s.n ? s.tabSwitches : "--";
 }
 
 async function refreshHistory() {
   const sessions = await FocusDB.getSessions();
   if (!sessions.length) {
-    historyBody.innerHTML = '<tr><td colspan="8" class="empty-row">no sessions logged yet</td></tr>';
+    historyBody.innerHTML = '<tr><td colspan="10" class="empty-row">no sessions logged yet</td></tr>';
     return;
   }
   const rows = await Promise.all(sessions.map(async (s) => {
@@ -327,8 +379,10 @@ async function refreshHistory() {
     const date = new Date(s.startedAt).toLocaleString("en-GB", {
       day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
     });
+    const modeLabel = s.mode === "meeting" ? "MEET" : "STUDY";
     return `<tr>
       <td>${date}</td>
+      <td>${modeLabel}</td>
       <td>${s.label || "untitled"}</td>
       <td>${sum.n ? Math.round(sum.avgScore) : "--"}</td>
       <td>${mins}</td>
@@ -336,6 +390,7 @@ async function refreshHistory() {
       <td>${sum.eyesClosedSecs}s</td>
       <td>${sum.talkingSecs}s</td>
       <td>${sum.movementSecs}s</td>
+      <td>${sum.tabSwitches}</td>
     </tr>`;
   }));
   historyBody.innerHTML = rows.join("");
@@ -353,12 +408,26 @@ clearDataLink.addEventListener("click", async () => {
   await FocusDB.clearAll();
   await refreshHistory();
   mAvg.textContent = mPresent.textContent = mLooking.textContent = mPhone.textContent = "--";
-  mEyes.textContent = mTalking.textContent = mMovement.textContent = "--";
+  mEyes.textContent = mTalking.textContent = mMovement.textContent = mTabAway.textContent = "--";
+});
+
+exportCsvLink.addEventListener("click", async () => {
+  const csv = await FocusDB.exportCsv();
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `focus-buddy-sessions-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 });
 
 // ---------- Init ----------
 (async function init() {
   initChart();
+  applyModeUI();
   startBtn.disabled = true;
   await initModels();
   await refreshHistory();

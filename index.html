@@ -47,6 +47,10 @@
 
     <div class="controls">
       <input id="session-label" type="text" placeholder="session label (e.g. SDA assignment)" maxlength="60">
+      <select id="mode-select">
+        <option value="study" selected>Study Session</option>
+        <option value="meeting">Meeting / Lecture</option>
+      </select>
       <select id="duration-select">
         <option value="15">15 min</option>
         <option value="25" selected>25 min (pomodoro)</option>
@@ -57,7 +61,7 @@
       <button id="start-btn" class="btn btn-primary">START SESSION</button>
       <button id="stop-btn" class="btn btn-danger" disabled>STOP</button>
     </div>
-    <p class="hint">Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.</p>
+    <p class="hint" id="mode-hint">Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.</p>
   </section>
 
   <!-- RIGHT: Stats + history -->
@@ -85,12 +89,16 @@
         <span id="m-eyes" class="metric-value">--</span>
       </div>
       <div class="metric">
-        <span class="metric-label">TALKING</span>
+        <span class="metric-label" id="m-talking-label">TALKING</span>
         <span id="m-talking" class="metric-value">--</span>
       </div>
       <div class="metric">
         <span class="metric-label">MOVEMENT</span>
         <span id="m-movement" class="metric-value">--</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">TAB SWITCHES</span>
+        <span id="m-tabaway" class="metric-value">--</span>
       </div>
     </div>
 
@@ -98,14 +106,17 @@
       <canvas id="live-chart"></canvas>
     </div>
 
-    <div class="panel-header sub"><span>[ 03 ] SESSION_HISTORY</span></div>
+    <div class="panel-header sub">
+      <span>[ 03 ] SESSION_HISTORY</span>
+      <span id="export-csv" class="link small">export CSV</span>
+    </div>
     <div class="history-table-wrap">
       <table id="history-table">
         <thead>
-          <tr><th>DATE</th><th>LABEL</th><th>AVG</th><th>MINS</th><th>PHONE</th><th>EYES</th><th>TALK</th><th>MOVE</th></tr>
+          <tr><th>DATE</th><th>MODE</th><th>LABEL</th><th>AVG</th><th>MINS</th><th>PHONE</th><th>EYES</th><th>TALK</th><th>MOVE</th><th>TABS</th></tr>
         </thead>
         <tbody id="history-body">
-          <tr><td colspan="8" class="empty-row">no sessions logged yet</td></tr>
+          <tr><td colspan="10" class="empty-row">no sessions logged yet</td></tr>
         </tbody>
       </table>
     </div>

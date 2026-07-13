@@ -32,12 +32,13 @@ const FocusDB = (() => {
     return dbPromise;
   }
 
-  async function startSession(label) {
+  async function startSession(label, mode = "study") {
     const db = await open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("sessions", "readwrite");
       const req = tx.objectStore("sessions").add({
         label: label || "",
+        mode,
         startedAt: Date.now(),
         endedAt: null,
       });
@@ -77,6 +78,7 @@ const FocusDB = (() => {
         eyesClosed: !!signals.eyesClosed,
         talking: !!signals.talking,
         excessiveMovement: !!signals.excessiveMovement,
+        tabAway: !!signals.tabAway,
         focusScore,
       });
       tx.oncomplete = () => resolve();
@@ -110,6 +112,7 @@ const FocusDB = (() => {
       return {
         n: 0, avgScore: 0, pctPresent: 0, pctLooking: 0,
         phonePickups: 0, eyesClosedSecs: 0, talkingSecs: 0, movementSecs: 0,
+        tabAwaySecs: 0, tabSwitches: 0,
       };
     }
     const n = ticks.length;
@@ -120,7 +123,15 @@ const FocusDB = (() => {
     const eyesClosedSecs = ticks.filter((t) => t.eyesClosed).length;
     const talkingSecs = ticks.filter((t) => t.talking).length;
     const movementSecs = ticks.filter((t) => t.excessiveMovement).length;
-    return { n, avgScore, pctPresent, pctLooking, phonePickups, eyesClosedSecs, talkingSecs, movementSecs };
+    const tabAwaySecs = ticks.filter((t) => t.tabAway).length;
+    let tabSwitches = 0;
+    for (let i = 1; i < ticks.length; i++) {
+      if (ticks[i].tabAway && !ticks[i - 1].tabAway) tabSwitches++;
+    }
+    return {
+      n, avgScore, pctPresent, pctLooking, phonePickups,
+      eyesClosedSecs, talkingSecs, movementSecs, tabAwaySecs, tabSwitches,
+    };
   }
 
   async function clearAll() {
@@ -134,5 +145,33 @@ const FocusDB = (() => {
     });
   }
 
-  return { startSession, endSession, logTick, getSessions, getTicks, summarize, clearAll };
+  async function exportCsv() {
+    const sessions = await getSessions();
+    const rows = [["id", "started_at", "ended_at", "mode", "label", "avg_score",
+      "pct_present", "pct_looking", "phone_pickups", "eyes_closed_secs",
+      "talking_secs", "movement_secs", "tab_away_secs", "tab_switches"]];
+    for (const s of sessions) {
+      const ticks = await getTicks(s.id);
+      const sum = summarize(ticks);
+      rows.push([
+        s.id,
+        new Date(s.startedAt).toISOString(),
+        s.endedAt ? new Date(s.endedAt).toISOString() : "",
+        s.mode || "study",
+        (s.label || "").replace(/,/g, ";"),
+        sum.avgScore.toFixed(1),
+        (sum.pctPresent * 100).toFixed(0),
+        (sum.pctLooking * 100).toFixed(0),
+        sum.phonePickups,
+        sum.eyesClosedSecs,
+        sum.talkingSecs,
+        sum.movementSecs,
+        sum.tabAwaySecs,
+        sum.tabSwitches,
+      ]);
+    }
+    return rows.map((r) => r.join(",")).join("\n");
+  }
+
+  return { startSession, endSession, logTick, getSessions, getTicks, summarize, clearAll, exportCsv };
 })();

@@ -6,13 +6,27 @@
  * in this tab via TensorFlow.js (WebGL backend) — the video frame
  * never leaves the browser and is never written to disk or a network
  * request. Only derived booleans + a numeric score are stored locally.
+ *
+ * Accuracy notes:
+ *   - A short calibration pass (runCalibration) measures this user's
+ *     own neutral head angle, open-eye EAR, and resting mouth jitter
+ *     before each session, so thresholds are personalized rather than
+ *     generic. See signals.js for how that's applied.
+ *   - "Looking away" uses a hysteresis streak counter (needs several
+ *     consecutive off-screen frames to flip, fewer to recover) so a
+ *     single glance or blink-adjacent frame doesn't flicker the state.
  */
 
 // ---------- Config ----------
-const YAW_THRESHOLD_RAD = 0.45;   // ~26 degrees
-const PITCH_THRESHOLD_RAD = 0.35; // ~20 degrees
-const PHONE_HOLD_FRAMES = 8;      // consecutive frames hand-near-face before flagging
+const PHONE_HOLD_FRAMES = 8;       // consecutive frames hand-near-face before flagging
 const LOG_INTERVAL_MS = 1000;
+const CALIBRATION_MS = 3000;
+const LOOK_AWAY_STREAK = 5;        // consecutive bad frames before flagging "away"
+const LOOK_BACK_STREAK = 2;        // consecutive good frames before clearing it
+const DEFAULT_YAW_THRESHOLD_RAD = 0.42;   // ~24°, used if calibration fails
+const DEFAULT_PITCH_THRESHOLD_RAD = 0.33; // ~19°
+const CALIBRATED_YAW_THRESHOLD_RAD = 0.30;   // ~17°, tighter once baseline is known
+const CALIBRATED_PITCH_THRESHOLD_RAD = 0.26; // ~15°
 
 const humanConfig = {
   modelBasePath: "https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/models/",
@@ -20,7 +34,7 @@ const humanConfig = {
   debug: false,
   face: {
     enabled: true,
-    detector: { rotation: true, maxDetected: 1 },
+    detector: { rotation: true, maxDetected: 1, minConfidence: 0.4 },
     mesh: { enabled: true },
     iris: { enabled: false },
     description: { enabled: false },
@@ -41,13 +55,15 @@ let scorer = new FocusScorer();
 let signalTracker = new SignalTracker();
 let currentSessionId = null;
 let sessionTimer = null;
-let sessionEndAt = null;
 let phoneStreak = 0;
 let running = false;
 let liveChart = null;
 let tabAway = false;
 const chartLabels = [];
 const chartData = [];
+
+// Calibration baseline — null until runCalibration() completes successfully.
+let calibration = null; // { yaw, pitch, ear, marNoise }
 
 document.addEventListener("visibilitychange", () => {
   tabAway = document.hidden;
@@ -59,7 +75,9 @@ const overlay = document.getElementById("overlay");
 const octx = overlay.getContext("2d");
 const modelStatus = document.getElementById("model-status");
 const scoreValue = document.getElementById("score-value");
+const ringProgress = document.getElementById("ring-progress");
 const stateBadge = document.getElementById("state-badge");
+const stateText = stateBadge.querySelector(".state-text");
 const startBtn = document.getElementById("start-btn");
 const stopBtn = document.getElementById("stop-btn");
 const labelInput = document.getElementById("session-label");
@@ -79,6 +97,14 @@ const historyBody = document.getElementById("history-body");
 const clockEl = document.getElementById("clock");
 const clearDataLink = document.getElementById("clear-data");
 const exportCsvLink = document.getElementById("export-csv");
+const calibrationOverlay = document.getElementById("calibration-overlay");
+const calibProgress = document.getElementById("calib-progress");
+const calibCount = document.getElementById("calib-count");
+
+const RING_CIRCUMFERENCE = 2 * Math.PI * 52;   // r=52, matches SVG
+const CALIB_CIRCUMFERENCE = 2 * Math.PI * 34;  // r=34, matches SVG
+ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
+calibProgress.style.strokeDasharray = String(CALIB_CIRCUMFERENCE);
 
 const MODE_HINTS = {
   study: "Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.",
@@ -88,16 +114,16 @@ const MODE_HINTS = {
 function applyModeUI() {
   const mode = modeSelect.value;
   modeHint.textContent = MODE_HINTS[mode];
-  mTalkingLabel.textContent = mode === "meeting" ? "SPEAKING" : "TALKING";
+  mTalkingLabel.textContent = mode === "meeting" ? "Speaking" : "Talking";
   labelInput.placeholder = mode === "meeting"
     ? "meeting/lecture title (e.g. Sprint standup)"
-    : "session label (e.g. SDA assignment)";
+    : "e.g. SDA assignment";
 }
 modeSelect.addEventListener("change", applyModeUI);
 
 // ---------- Clock ----------
 function tickClock() {
-  clockEl.textContent = new Date().toLocaleTimeString("en-GB", { hour12: false });
+  clockEl.textContent = new Date().toLocaleTimeString("en-GB", { hour12: false, hour: "2-digit", minute: "2-digit" });
 }
 setInterval(tickClock, 1000);
 tickClock();
@@ -105,17 +131,20 @@ tickClock();
 // ---------- Chart setup ----------
 function initChart() {
   const ctx = document.getElementById("live-chart").getContext("2d");
+  const gradient = ctx.createLinearGradient(0, 0, 0, 130);
+  gradient.addColorStop(0, "rgba(99,102,241,0.25)");
+  gradient.addColorStop(1, "rgba(99,102,241,0.0)");
   liveChart = new Chart(ctx, {
     type: "line",
     data: {
       labels: chartLabels,
       datasets: [{
         data: chartData,
-        borderColor: "#baff29",
-        backgroundColor: "rgba(186,255,41,0.08)",
-        borderWidth: 2,
+        borderColor: "#6366f1",
+        backgroundColor: gradient,
+        borderWidth: 2.5,
         pointRadius: 0,
-        tension: 0.3,
+        tension: 0.35,
         fill: true,
       }],
     },
@@ -127,8 +156,8 @@ function initChart() {
         x: { display: false },
         y: {
           min: 0, max: 100,
-          grid: { color: "#2a2f27" },
-          ticks: { color: "#565b53", font: { size: 9 } },
+          grid: { color: "#e9eaf3" },
+          ticks: { color: "#a3a5b8", font: { size: 9 }, stepSize: 50 },
         },
       },
       plugins: { legend: { display: false } },
@@ -152,13 +181,13 @@ async function initModels() {
     human = new Human.Human(humanConfig);
     await human.load();
     await human.warmup();
-    modelStatus.textContent = "MODELS READY";
-    modelStatus.className = "status-pill ready";
+    modelStatus.textContent = "Models ready";
+    modelStatus.className = "pill pill-ready";
     startBtn.disabled = false;
   } catch (err) {
     console.error("Model load failed:", err);
-    modelStatus.textContent = "MODEL LOAD FAILED";
-    modelStatus.className = "status-pill error";
+    modelStatus.textContent = "Model load failed";
+    modelStatus.className = "pill pill-error";
   }
 }
 
@@ -180,18 +209,16 @@ function stopWebcam() {
   video.srcObject = null;
 }
 
-// ---------- Detection heuristics ----------
-function estimateLooking(face) {
+// ---------- Head pose ----------
+function getHeadPose(face) {
   const angle = face?.rotation?.angle;
-  if (!angle) return true; // fail-open: don't punish if angle unavailable
-  const yaw = Math.abs(angle.yaw || 0);
-  const pitch = Math.abs(angle.pitch || 0);
-  return yaw < YAW_THRESHOLD_RAD && pitch < PITCH_THRESHOLD_RAD;
+  if (!angle) return null;
+  return { yaw: angle.yaw || 0, pitch: angle.pitch || 0 };
 }
 
 function handNearFace(hands, face) {
   if (!hands || !hands.length || !face) return false;
-  const box = face.box; // [x, y, width, height]
+  const box = face.box;
   if (!box) return false;
   const faceCenter = [box[0] + box[2] / 2, box[1] + box[3] / 2];
   const faceScale = Math.max(box[2], box[3]);
@@ -212,10 +239,69 @@ function drawOverlay(result) {
   if (!result.face?.length) return;
   const box = result.face[0].box;
   if (box) {
-    octx.strokeStyle = "#baff29";
+    octx.strokeStyle = "rgba(99, 102, 241, 0.9)";
     octx.lineWidth = 2;
-    octx.strokeRect(box[0], box[1], box[2], box[3]);
+    octx.beginPath();
+    octx.roundRect(box[0], box[1], box[2], box[3], 10);
+    octx.stroke();
   }
+}
+
+// ---------- Calibration ----------
+async function runCalibration() {
+  calibrationOverlay.classList.remove("hidden");
+  const yaws = [], pitches = [], ears = [], mars = [];
+  const start = Date.now();
+
+  await new Promise((resolve) => {
+    function sampleLoop() {
+      const elapsed = Date.now() - start;
+      const remaining = Math.max(0, CALIBRATION_MS - elapsed);
+      const secondsLeft = Math.ceil(remaining / 1000);
+      calibCount.textContent = secondsLeft > 0 ? secondsLeft : "";
+      const progress = Math.min(1, elapsed / CALIBRATION_MS);
+      calibProgress.style.strokeDashoffset = String(CALIB_CIRCUMFERENCE * (1 - progress));
+
+      human.detect(video).then((result) => {
+        const face = result.face?.[0] || null;
+        if (face) {
+          const pose = getHeadPose(face);
+          if (pose) { yaws.push(pose.yaw); pitches.push(pose.pitch); }
+          const mesh = face.mesh;
+          if (mesh) {
+            const earL = eyeAspectRatio(mesh, LEFT_EYE);
+            const earR = eyeAspectRatio(mesh, RIGHT_EYE);
+            if (earL !== null && earR !== null) ears.push((earL + earR) / 2);
+            const mar = mouthAspectRatio(mesh);
+            if (mar !== null) mars.push(mar);
+          }
+        }
+        if (elapsed >= CALIBRATION_MS) {
+          resolve();
+        } else {
+          requestAnimationFrame(sampleLoop);
+        }
+      }).catch(() => {
+        if (elapsed >= CALIBRATION_MS) resolve();
+        else requestAnimationFrame(sampleLoop);
+      });
+    }
+    sampleLoop();
+  });
+
+  calibrationOverlay.classList.add("hidden");
+
+  if (yaws.length < 5) {
+    calibration = null;
+    return;
+  }
+  const avg = (arr) => arr.reduce((a, b) => a + b, 0) / arr.length;
+  calibration = {
+    yaw: avg(yaws),
+    pitch: avg(pitches),
+    ear: ears.length >= 5 ? avg(ears) : null,
+    marNoise: mars.length >= 5 ? stddev(mars) : null,
+  };
 }
 
 // ---------- Main loop ----------
@@ -227,6 +313,36 @@ let lastFaceSignals = {
   facePresent: false, lookingAtScreen: false, phoneDetected: false,
   eyesClosed: false, talking: false, excessiveMovement: false,
 };
+let lookAwayStreak = 0;
+let lookBackStreak = 0;
+let smoothedLooking = true;
+
+function evaluateLooking(face) {
+  const pose = getHeadPose(face);
+  if (!pose) return smoothedLooking; // fail-open: keep last known state if pose unavailable
+
+  const baseYaw = calibration ? calibration.yaw : 0;
+  const basePitch = calibration ? calibration.pitch : 0;
+  const yawThresh = calibration ? CALIBRATED_YAW_THRESHOLD_RAD : DEFAULT_YAW_THRESHOLD_RAD;
+  const pitchThresh = calibration ? CALIBRATED_PITCH_THRESHOLD_RAD : DEFAULT_PITCH_THRESHOLD_RAD;
+
+  const dYaw = Math.abs(pose.yaw - baseYaw);
+  const dPitch = Math.abs(pose.pitch - basePitch);
+  const rawLooking = dYaw < yawThresh && dPitch < pitchThresh;
+
+  // Hysteresis: require a streak before flipping, so single noisy frames
+  // don't cause the badge/score to flicker.
+  if (rawLooking) {
+    lookBackStreak++;
+    lookAwayStreak = 0;
+    if (lookBackStreak >= LOOK_BACK_STREAK) smoothedLooking = true;
+  } else {
+    lookAwayStreak++;
+    lookBackStreak = 0;
+    if (lookAwayStreak >= LOOK_AWAY_STREAK) smoothedLooking = false;
+  }
+  return smoothedLooking;
+}
 
 async function detectLoop() {
   if (!running) return;
@@ -234,7 +350,7 @@ async function detectLoop() {
     const result = await human.detect(video);
     const face = result.face?.[0] || null;
     const facePresent = !!face;
-    const lookingAtScreen = facePresent ? estimateLooking(face) : false;
+    const lookingAtScreen = facePresent ? evaluateLooking(face) : false;
 
     const rawPhone = handNearFace(result.hand, face);
     phoneStreak = rawPhone ? phoneStreak + 1 : 0;
@@ -269,7 +385,7 @@ function scoreTick() {
   if (!running) return;
   const signals = { ...lastFaceSignals, tabAway };
   const score = scorer.update(signals);
-  updateScoreDisplay(score, signals);
+  updateScoreDisplay(score);
 
   if (currentSessionId) {
     FocusDB.logTick(currentSessionId, signals, score).catch((e) => console.error(e));
@@ -277,41 +393,52 @@ function scoreTick() {
   }
 }
 
-function updateScoreDisplay(score, signals) {
+function updateScoreDisplay(score) {
   scoreValue.textContent = Math.round(score);
-  applyStateBadge(signals);
+  const offset = RING_CIRCUMFERENCE * (1 - score / 100);
+  ringProgress.style.strokeDashoffset = String(offset);
+  let color = "#34d399"; // green
+  if (score < 40) color = "#f87171";
+  else if (score < 70) color = "#fbbf24";
+  ringProgress.style.stroke = color;
 }
 
 function applyStateBadge(signals) {
   let label, cls;
-  if (signals.tabAway) { label = "TAB SWITCH"; cls = "phone"; }
-  else if (signals.phoneDetected) { label = "PHONE"; cls = "phone"; }
-  else if (!signals.facePresent) { label = "NO FACE"; cls = "noface"; }
-  else if (signals.eyesClosed) { label = "EYES CLOSED"; cls = "phone"; }
-  else if (!signals.lookingAtScreen) { label = "LOOKING AWAY"; cls = "away"; }
-  else if (signals.excessiveMovement) { label = "RESTLESS"; cls = "away"; }
-  else if (signals.talking && scorer.weights.talkingPenalty > 0) { label = "TALKING"; cls = "away"; }
-  else if (signals.talking) { label = "SPEAKING"; cls = "focused"; }
-  else { label = "FOCUSED"; cls = "focused"; }
-  stateBadge.textContent = label;
-  stateBadge.className = "state-badge " + cls;
+  if (signals.tabAway) { label = "Tab switch"; cls = "alert"; }
+  else if (signals.phoneDetected) { label = "Phone"; cls = "alert"; }
+  else if (!signals.facePresent) { label = "No face"; cls = "alert"; }
+  else if (signals.eyesClosed) { label = "Eyes closed"; cls = "alert"; }
+  else if (!signals.lookingAtScreen) { label = "Looking away"; cls = "away"; }
+  else if (signals.excessiveMovement) { label = "Restless"; cls = "away"; }
+  else if (signals.talking && scorer.weights.talkingPenalty > 0) { label = "Talking"; cls = "away"; }
+  else if (signals.talking) { label = "Speaking"; cls = "focused"; }
+  else { label = "Focused"; cls = "focused"; }
+  stateText.textContent = label;
+  stateBadge.className = "state-chip " + cls;
 }
 
 // ---------- Session control ----------
 async function startSession() {
   await startWebcam();
+  startBtn.disabled = true;
+  await runCalibration();
+
   const mode = modeSelect.value;
   currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode);
   scorer = new FocusScorer({ mode });
   signalTracker.reset();
+  signalTracker.applyCalibration(calibration ? { ear: calibration.ear, marNoise: calibration.marNoise } : null);
   phoneStreak = 0;
+  lookAwayStreak = 0;
+  lookBackStreak = 0;
+  smoothedLooking = true;
   tabAway = document.hidden;
   chartLabels.length = 0;
   chartData.length = 0;
   liveChart.update("none");
 
   running = true;
-  startBtn.disabled = true;
   stopBtn.disabled = false;
   labelInput.disabled = true;
   modeSelect.disabled = true;
@@ -319,7 +446,6 @@ async function startSession() {
 
   const durationMin = parseFloat(durationSelect.value);
   if (durationMin > 0) {
-    sessionEndAt = Date.now() + durationMin * 60000;
     sessionTimer = setTimeout(stopSession, durationMin * 60000);
   }
 
@@ -346,8 +472,9 @@ async function stopSession() {
   modeSelect.disabled = false;
   durationSelect.disabled = false;
   scoreValue.textContent = "--";
-  stateBadge.textContent = "STANDBY";
-  stateBadge.className = "state-badge";
+  ringProgress.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
+  stateText.textContent = "Standby";
+  stateBadge.className = "state-chip standby";
 
   await refreshHistory();
 }
@@ -369,29 +496,27 @@ async function refreshSummaryFor(sessionId) {
 async function refreshHistory() {
   const sessions = await FocusDB.getSessions();
   if (!sessions.length) {
-    historyBody.innerHTML = '<tr><td colspan="10" class="empty-row">no sessions logged yet</td></tr>';
+    historyBody.innerHTML = '<div class="empty-row">No sessions logged yet</div>';
     return;
   }
   const rows = await Promise.all(sessions.map(async (s) => {
     const ticks = await FocusDB.getTicks(s.id);
     const sum = FocusDB.summarize(ticks);
-    const mins = s.endedAt ? Math.round((s.endedAt - s.startedAt) / 60000) : "--";
     const date = new Date(s.startedAt).toLocaleString("en-GB", {
       day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
     });
-    const modeLabel = s.mode === "meeting" ? "MEET" : "STUDY";
-    return `<tr>
-      <td>${date}</td>
-      <td>${modeLabel}</td>
-      <td>${s.label || "untitled"}</td>
-      <td>${sum.n ? Math.round(sum.avgScore) : "--"}</td>
-      <td>${mins}</td>
-      <td>${sum.phonePickups}</td>
-      <td>${sum.eyesClosedSecs}s</td>
-      <td>${sum.talkingSecs}s</td>
-      <td>${sum.movementSecs}s</td>
-      <td>${sum.tabSwitches}</td>
-    </tr>`;
+    const modeCls = s.mode === "meeting" ? "meeting" : "study";
+    const modeLabel = s.mode === "meeting" ? "Meet" : "Study";
+    const score = sum.n ? Math.round(sum.avgScore) : "--";
+    const scoreColor = !sum.n ? "var(--text-faint)" : score >= 70 ? "var(--green)" : score >= 40 ? "var(--amber)" : "var(--red)";
+    return `<div class="history-row">
+      <span class="history-mode-chip ${modeCls}">${modeLabel}</span>
+      <div class="history-main">
+        <div class="history-label">${s.label || "Untitled"}</div>
+        <div class="history-date">${date}</div>
+      </div>
+      <span class="history-score" style="color:${scoreColor}">${score}</span>
+    </div>`;
   }));
   historyBody.innerHTML = rows.join("");
 }
@@ -399,6 +524,8 @@ async function refreshHistory() {
 // ---------- Wiring ----------
 startBtn.addEventListener("click", () => startSession().catch((err) => {
   console.error(err);
+  startBtn.disabled = false;
+  calibrationOverlay.classList.add("hidden");
   alert("Could not start webcam/session: " + err.message);
 }));
 stopBtn.addEventListener("click", () => stopSession());

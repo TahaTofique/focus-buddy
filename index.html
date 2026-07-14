@@ -3,129 +3,200 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>FOCUS_BUDDY // local-only session tracker</title>
+<title>Focus Buddy</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Lexend:wght@500;600;700;800&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<div class="scanlines"></div>
+<div class="bg-orb orb-1"></div>
+<div class="bg-orb orb-2"></div>
 
 <header class="topbar">
   <div class="brand">
-    <span class="brand-dot"></span>
-    <span class="brand-text">FOCUS_BUDDY</span>
+    <div class="brand-mark">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <circle cx="12" cy="12" r="9" stroke="white" stroke-width="2"/>
+        <circle cx="12" cy="12" r="3.2" fill="white"/>
+      </svg>
+    </div>
+    <span class="brand-text">Focus Buddy</span>
   </div>
-  <div class="topbar-meta">
-    <span id="clock">--:--:--</span>
-    <span class="sep">/</span>
-    <span class="privacy-badge">LOCAL-ONLY // NO UPLOAD</span>
+  <div class="topbar-right">
+    <span class="privacy-chip">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M12 2L4 5v6c0 5.5 3.8 10.7 8 12 4.2-1.3 8-6.5 8-12V5l-8-3z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+      On-device only
+    </span>
+    <span id="clock" class="clock">--:--</span>
   </div>
 </header>
 
-<main class="grid">
+<main class="layout">
 
   <!-- LEFT: Camera + live status -->
-  <section class="panel cam-panel">
-    <div class="panel-header">
-      <span>[ 01 ] LIVE_FEED</span>
-      <span id="model-status" class="status-pill loading">LOADING MODELS…</span>
+  <section class="card cam-card">
+    <div class="card-head">
+      <h2>Live session</h2>
+      <span id="model-status" class="pill pill-loading">Loading models…</span>
     </div>
 
-    <div class="cam-wrap">
+    <div class="cam-frame">
       <video id="video" autoplay muted playsinline></video>
       <canvas id="overlay"></canvas>
-      <div class="cam-hud">
-        <div class="score-readout">
-          <span class="score-label">FOCUS</span>
-          <span id="score-value">--</span>
+
+      <div class="cam-overlay-top">
+        <div id="state-badge" class="state-chip standby">
+          <span class="state-dot"></span>
+          <span class="state-text">Standby</span>
         </div>
-        <div id="state-badge" class="state-badge">STANDBY</div>
+      </div>
+
+      <div class="score-ring-wrap">
+        <svg class="score-ring" viewBox="0 0 120 120">
+          <circle class="ring-track" cx="60" cy="60" r="52"/>
+          <circle id="ring-progress" class="ring-progress" cx="60" cy="60" r="52"/>
+        </svg>
+        <div class="score-ring-label">
+          <span id="score-value">--</span>
+          <small>focus</small>
+        </div>
+      </div>
+
+      <!-- Calibration overlay -->
+      <div id="calibration-overlay" class="calibration-overlay hidden">
+        <div class="calibration-box">
+          <div class="calib-ring">
+            <svg viewBox="0 0 80 80">
+              <circle class="calib-track" cx="40" cy="40" r="34"/>
+              <circle id="calib-progress" class="calib-progress" cx="40" cy="40" r="34"/>
+            </svg>
+            <span id="calib-count">3</span>
+          </div>
+          <p class="calib-title">Calibrating to your face</p>
+          <p class="calib-sub">Sit naturally and look at the screen — this personalizes accuracy to your camera and lighting.</p>
+        </div>
       </div>
     </div>
 
     <div class="controls">
-      <input id="session-label" type="text" placeholder="session label (e.g. SDA assignment)" maxlength="60">
-      <select id="mode-select">
-        <option value="study" selected>Study Session</option>
-        <option value="meeting">Meeting / Lecture</option>
-      </select>
-      <select id="duration-select">
-        <option value="15">15 min</option>
-        <option value="25" selected>25 min (pomodoro)</option>
-        <option value="45">45 min</option>
-        <option value="60">60 min</option>
-        <option value="0">no limit</option>
-      </select>
-      <button id="start-btn" class="btn btn-primary">START SESSION</button>
-      <button id="stop-btn" class="btn btn-danger" disabled>STOP</button>
+      <div class="field">
+        <label>Session label</label>
+        <input id="session-label" type="text" placeholder="e.g. SDA assignment" maxlength="60">
+      </div>
+      <div class="field field-narrow">
+        <label>Mode</label>
+        <select id="mode-select">
+          <option value="study" selected>Study</option>
+          <option value="meeting">Meeting / Lecture</option>
+        </select>
+      </div>
+      <div class="field field-narrow">
+        <label>Duration</label>
+        <select id="duration-select">
+          <option value="15">15 min</option>
+          <option value="25" selected>25 min</option>
+          <option value="45">45 min</option>
+          <option value="60">60 min</option>
+          <option value="0">No limit</option>
+        </select>
+      </div>
+      <div class="field field-buttons">
+        <label>&nbsp;</label>
+        <div class="btn-row">
+          <button id="start-btn" class="btn btn-primary">Start</button>
+          <button id="stop-btn" class="btn btn-ghost-danger" disabled>Stop</button>
+        </div>
+      </div>
     </div>
-    <p class="hint" id="mode-hint">Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.</p>
+    <p id="mode-hint" class="hint"></p>
   </section>
 
   <!-- RIGHT: Stats + history -->
-  <section class="panel stats-panel">
-    <div class="panel-header"><span>[ 02 ] SESSION_METRICS</span></div>
-    <div class="metrics-grid">
-      <div class="metric">
-        <span class="metric-label">AVG FOCUS</span>
-        <span id="m-avg" class="metric-value">--</span>
+  <section class="right-col">
+
+    <div class="card stats-card">
+      <div class="card-head"><h2>Session metrics</h2></div>
+      <div class="stat-grid">
+        <div class="stat">
+          <div class="stat-icon icon-blue">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 2v20M2 12h20" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </div>
+          <span id="m-avg" class="stat-value">--</span>
+          <span class="stat-label">Avg focus</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-green">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 12a4 4 0 100-8 4 4 0 000 8zM5 21c0-3.9 3.1-7 7-7s7 3.1 7 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </div>
+          <span id="m-present" class="stat-value">--</span>
+          <span class="stat-label">Present</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-violet">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2.2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2.2"/></svg>
+          </div>
+          <span id="m-looking" class="stat-value">--</span>
+          <span class="stat-label">On-screen</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-red">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="2" stroke="currentColor" stroke-width="2.2"/></svg>
+          </div>
+          <span id="m-phone" class="stat-value">--</span>
+          <span class="stat-label">Phone flags</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-amber">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2.2"/><path d="M5 12h14" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"/></svg>
+          </div>
+          <span id="m-eyes" class="stat-value">--</span>
+          <span class="stat-label">Eyes closed</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-teal">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.4-4 8-9 8-1.4 0-2.8-.3-4-.8L3 20l1-3.8C3.4 15 3 13.6 3 12c0-4.4 4-8 9-8s9 3.6 9 8z" stroke="currentColor" stroke-width="2"/></svg>
+          </div>
+          <span id="m-talking" class="stat-value">--</span>
+          <span id="m-talking-label" class="stat-label">Talking</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-orange">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M13 2L3 14h7l-1 8 10-12h-7l1-8z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
+          </div>
+          <span id="m-movement" class="stat-value">--</span>
+          <span class="stat-label">Movement</span>
+        </div>
+        <div class="stat">
+          <div class="stat-icon icon-slate">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="2"/><path d="M3 9h18" stroke="currentColor" stroke-width="2"/></svg>
+          </div>
+          <span id="m-tabaway" class="stat-value">--</span>
+          <span class="stat-label">Tab switches</span>
+        </div>
       </div>
-      <div class="metric">
-        <span class="metric-label">PRESENT</span>
-        <span id="m-present" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">ON-SCREEN</span>
-        <span id="m-looking" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">PHONE FLAGS</span>
-        <span id="m-phone" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">EYES CLOSED</span>
-        <span id="m-eyes" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label" id="m-talking-label">TALKING</span>
-        <span id="m-talking" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">MOVEMENT</span>
-        <span id="m-movement" class="metric-value">--</span>
-      </div>
-      <div class="metric">
-        <span class="metric-label">TAB SWITCHES</span>
-        <span id="m-tabaway" class="metric-value">--</span>
+
+      <div class="chart-wrap">
+        <canvas id="live-chart"></canvas>
       </div>
     </div>
 
-    <div class="chart-wrap">
-      <canvas id="live-chart"></canvas>
+    <div class="card history-card">
+      <div class="card-head">
+        <h2>History</h2>
+        <span id="export-csv" class="link">Export CSV</span>
+      </div>
+      <div class="history-list" id="history-body">
+        <div class="empty-row">No sessions logged yet</div>
+      </div>
     </div>
 
-    <div class="panel-header sub">
-      <span>[ 03 ] SESSION_HISTORY</span>
-      <span id="export-csv" class="link small">export CSV</span>
-    </div>
-    <div class="history-table-wrap">
-      <table id="history-table">
-        <thead>
-          <tr><th>DATE</th><th>MODE</th><th>LABEL</th><th>AVG</th><th>MINS</th><th>PHONE</th><th>EYES</th><th>TALK</th><th>MOVE</th><th>TABS</th></tr>
-        </thead>
-        <tbody id="history-body">
-          <tr><td colspan="10" class="empty-row">no sessions logged yet</td></tr>
-        </tbody>
-      </table>
-    </div>
   </section>
 
 </main>
 
 <footer class="footer">
-  <span>data stored in this browser's IndexedDB only // <span id="clear-data" class="link">clear all local data</span></span>
+  Stored locally in this browser only · <span id="clear-data" class="link">Clear all data</span>
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/dist/human.js"></script>

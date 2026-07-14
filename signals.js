@@ -10,7 +10,19 @@
  *   talking            — mouth opening/closing rhythmically (chatting, singing along)
  *   excessiveMovement  — head/face bouncing around a lot (fidgeting, dancing, restless)
  *
- * These are heuristics built on landmark geometry, not a trained
+ * Accuracy improvements over a naive fixed-threshold approach:
+ *   1. Per-user CALIBRATION — a short baseline capture (see calibrate.js
+ *      usage in app.js) measures this specific person's natural open-eye
+ *      EAR and resting mouth jitter, so thresholds adapt to face shape,
+ *      camera angle, and lighting instead of using one generic number
+ *      for everyone.
+ *   2. EMA SMOOTHING on the raw EAR signal to reduce frame-to-frame
+ *      landmark jitter before it's compared to a threshold at all.
+ *   3. HYSTERESIS (sustained-duration / windowed-variance checks) so a
+ *      single noisy frame can't flip a state — already present in the
+ *      original design, kept and tightened here.
+ *
+ * These remain heuristics built on landmark geometry, not a trained
  * classifier — deliberately, so every threshold is visible and
  * explainable rather than a black box.
  */
@@ -58,12 +70,15 @@ function stddev(arr) {
 
 class SignalTracker {
   constructor({
+    // Fallback generic thresholds, used only when no calibration is
+    // available (calibration overrides these — see applyCalibration()).
     earThreshold = 0.21,
-    eyesClosedMs = 600,
+    eyesClosedMs = 500,
     marWindowMs = 1200,
     marTalkStddevThreshold = 0.018,
     movementWindowMs = 900,
     movementRatioThreshold = 0.32,
+    earSmoothingAlpha = 0.45, // lower = smoother/slower, higher = more responsive
   } = {}) {
     this.earThreshold = earThreshold;
     this.eyesClosedMs = eyesClosedMs;
@@ -71,35 +86,66 @@ class SignalTracker {
     this.marTalkStddevThreshold = marTalkStddevThreshold;
     this.movementWindowMs = movementWindowMs;
     this.movementRatioThreshold = movementRatioThreshold;
+    this.earSmoothingAlpha = earSmoothingAlpha;
 
     this._eyesClosedSince = null;
     this._marHistory = [];      // [{ t, value }]
     this._centerHistory = [];   // [{ t, x, y, scale }]
+    this._earEMA = null;
+  }
+
+  /**
+   * Apply per-user calibration measured during a short baseline capture.
+   * @param {{ ear: number, marNoise: number }} calibration
+   */
+  applyCalibration(calibration) {
+    if (!calibration) return;
+    if (calibration.ear) {
+      // Eyes are "closed" once EAR drops to ~72% of this user's own
+      // natural open-eye value — far more precise than a fixed constant,
+      // since resting EAR varies a lot with eye shape and camera angle.
+      this.earThreshold = calibration.ear * 0.72;
+    }
+    if (calibration.marNoise !== undefined) {
+      // Talking threshold must clear this user's natural landmark-jitter
+      // noise floor at rest, or a shaky webcam feed causes false positives.
+      this.marTalkStddevThreshold = Math.max(0.014, calibration.marNoise * 3.2);
+    }
   }
 
   reset() {
     this._eyesClosedSince = null;
     this._marHistory = [];
     this._centerHistory = [];
+    this._earEMA = null;
   }
 
   /**
    * @param {Array} mesh - face.mesh array of [x,y,z] points, or null
    * @param {Array} box - face.box [x,y,w,h], or null
-   * @returns {{eyesClosed: boolean, talking: boolean, excessiveMovement: boolean, ear: number|null}}
+   * @returns {{eyesClosed: boolean, talking: boolean, excessiveMovement: boolean, ear: number|null, mar: number|null}}
    */
   update(mesh, box) {
     const now = Date.now();
 
     if (!mesh || !box) {
       this._eyesClosedSince = null;
-      return { eyesClosed: false, talking: false, excessiveMovement: false, ear: null };
+      this._earEMA = null;
+      return { eyesClosed: false, talking: false, excessiveMovement: false, ear: null, mar: null };
     }
 
-    // --- Eye closure ---
+    // --- Eye closure (EMA-smoothed EAR + sustained-duration check) ---
     const earL = eyeAspectRatio(mesh, LEFT_EYE);
     const earR = eyeAspectRatio(mesh, RIGHT_EYE);
-    const ear = earL !== null && earR !== null ? (earL + earR) / 2 : null;
+    const earRaw = earL !== null && earR !== null ? (earL + earR) / 2 : null;
+
+    let ear = earRaw;
+    if (earRaw !== null) {
+      this._earEMA = this._earEMA === null
+        ? earRaw
+        : this.earSmoothingAlpha * earRaw + (1 - this.earSmoothingAlpha) * this._earEMA;
+      ear = this._earEMA;
+    }
 
     let eyesClosed = false;
     if (ear !== null) {
@@ -139,6 +185,6 @@ class SignalTracker {
       excessiveMovement = range / faceScale > this.movementRatioThreshold;
     }
 
-    return { eyesClosed, talking, excessiveMovement, ear };
+    return { eyesClosed, talking, excessiveMovement, ear, mar };
   }
 }

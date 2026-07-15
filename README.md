@@ -7,18 +7,36 @@ runs inside this single browser tab. Clean, modern interface with a
 live focus ring, glass-style cards, and a per-user calibration step
 for real accuracy instead of generic guesses.
 
-## Calibration (accuracy)
+## Calibration & precision (accuracy)
 
 Every session starts with a ~3 second calibration: sit naturally and
 look at the screen while it measures *your* neutral head angle,
 open-eye ratio, and natural mouth-landmark jitter. Everything after
 that is judged relative to your own baseline instead of one generic
-threshold for everyone — this is the single biggest accuracy lever
-in the app (see `runCalibration()` in `app.js`).
+threshold for everyone. The eye-closure baseline specifically uses a
+**trimmed mean** — if you blink during calibration, that low sample
+gets dropped instead of dragging your whole "eyes open" baseline down.
 
-"Looking away" also uses hysteresis: it takes 5 consecutive off-screen
-frames to flag you as away, but only 2 good frames to clear it — so a
-quick glance or a blink-adjacent frame doesn't cause flicker.
+Beyond calibration, every behavioral signal now has **hysteresis**:
+it takes a short streak of consecutive qualifying frames to turn a
+signal on, and a streak of clean frames to turn it back off. This is
+what stops a single noisy frame — a hand passing near your face, one
+odd landmark reading — from flipping the badge for an instant. Applies
+to: looking-away, eyes-closed, talking, movement, and phone detection.
+
+**Movement** specifically no longer just measures "how much did the
+face move" — it now also counts **direction reversals** within the
+tracking window. A single calm shift in seating position has ~0
+reversals and won't trigger "Restless"; genuine fidgeting or dancing
+reverses direction repeatedly and does.
+
+**Leaving the desk** now has a grace period: momentary tracking loss
+(a hand passing by, a quick head turn, brief occlusion) is tolerated
+for ~1.8s before it counts as "gone" — so it doesn't zero your score
+for a blip. Beyond ~12 seconds of continuous absence, the badge
+switches from "No face" to "Stepped away" to distinguish a longer
+break from a momentary glitch. Each transition into sustained absence
+is also counted as an "Away event" in your session metrics/history.
 
 ## Two modes
 
@@ -143,6 +161,10 @@ vs `meeting` mode. Change these directly to retune either mode.
 - Calibration is per-session, not persisted — if lighting or your
   seating position changes drastically mid-session, thresholds won't
   re-adjust until the next session.
+- Hysteresis and the face-absence grace period trade a small amount of
+  responsiveness for a large reduction in false positives — expect the
+  badge to lag reality by roughly half a second to a couple of seconds
+  by design, not as a bug.
 - Model field names come from Human's documented API; if a library
   version bump changes the result shape, check the browser console.
 - Requires camera permission and a browser with WebGL support.

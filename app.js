@@ -27,6 +27,8 @@ const DEFAULT_YAW_THRESHOLD_RAD = 0.42;   // ~24°, used if calibration fails
 const DEFAULT_PITCH_THRESHOLD_RAD = 0.33; // ~19°
 const CALIBRATED_YAW_THRESHOLD_RAD = 0.30;   // ~17°, tighter once baseline is known
 const CALIBRATED_PITCH_THRESHOLD_RAD = 0.26; // ~15°
+const FACE_ABSENT_GRACE_MS = 1800;  // brief occlusion/tracking loss tolerance before it counts as "gone"
+const STEPPED_AWAY_MS = 12000;      // sustained absence beyond this -> distinct "Stepped away" label
 
 const humanConfig = {
   modelBasePath: "https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/models/",
@@ -93,6 +95,7 @@ const mTalking = document.getElementById("m-talking");
 const mTalkingLabel = document.getElementById("m-talking-label");
 const mMovement = document.getElementById("m-movement");
 const mTabAway = document.getElementById("m-tabaway");
+const mAway = document.getElementById("m-away");
 const historyBody = document.getElementById("history-body");
 const clockEl = document.getElementById("clock");
 const clearDataLink = document.getElementById("clear-data");
@@ -299,7 +302,9 @@ async function runCalibration() {
   calibration = {
     yaw: avg(yaws),
     pitch: avg(pitches),
-    ear: ears.length >= 5 ? avg(ears) : null,
+    // Trimmed mean: if the person blinks during calibration, those low
+    // EAR samples get dropped instead of dragging the baseline down.
+    ear: ears.length >= 5 ? trimmedMeanLow(ears) : null,
     marNoise: mars.length >= 5 ? stddev(mars) : null,
   };
 }
@@ -316,6 +321,8 @@ let lastFaceSignals = {
 let lookAwayStreak = 0;
 let lookBackStreak = 0;
 let smoothedLooking = true;
+let faceAbsentSince = null;
+let smoothedFacePresent = true;
 
 function evaluateLooking(face) {
   const pose = getHeadPose(face);
@@ -349,27 +356,56 @@ async function detectLoop() {
   try {
     const result = await human.detect(video);
     const face = result.face?.[0] || null;
-    const facePresent = !!face;
-    const lookingAtScreen = facePresent ? evaluateLooking(face) : false;
+    const rawFacePresent = !!face;
+    const now = Date.now();
+
+    if (rawFacePresent) {
+      faceAbsentSince = null;
+      smoothedFacePresent = true;
+    } else {
+      if (faceAbsentSince === null) faceAbsentSince = now;
+      if (now - faceAbsentSince >= FACE_ABSENT_GRACE_MS) smoothedFacePresent = false;
+      // else: still within the grace window — hold last known presence state
+      // so a momentary occlusion (hand passing by, quick tracking loss)
+      // doesn't instantly zero the score like actually leaving would.
+    }
+
+    let lookingAtScreen, eyesClosed, talking, excessiveMovement;
+    if (rawFacePresent) {
+      lookingAtScreen = evaluateLooking(face);
+      const behavioral = signalTracker.update(face.mesh || null, face.box || null);
+      eyesClosed = behavioral.eyesClosed;
+      talking = behavioral.talking;
+      excessiveMovement = behavioral.excessiveMovement;
+    } else if (smoothedFacePresent) {
+      // Within grace period: no new landmark data this frame, so hold the
+      // last known behavioral signals rather than guessing.
+      ({ lookingAtScreen, eyesClosed, talking, excessiveMovement } = lastFaceSignals);
+      signalTracker.update(null, null);
+    } else {
+      // Genuinely stepped away — these should read as false, not stale.
+      lookingAtScreen = false;
+      eyesClosed = false;
+      talking = false;
+      excessiveMovement = false;
+      signalTracker.update(null, null);
+    }
 
     const rawPhone = handNearFace(result.hand, face);
     phoneStreak = rawPhone ? phoneStreak + 1 : 0;
     const phoneDetected = phoneStreak >= PHONE_HOLD_FRAMES;
 
-    const mesh = face?.mesh || null;
-    const box = face?.box || null;
-    const behavioral = signalTracker.update(mesh, box);
-
     lastFaceSignals = {
-      facePresent,
+      facePresent: smoothedFacePresent,
       lookingAtScreen,
       phoneDetected,
-      eyesClosed: behavioral.eyesClosed,
-      talking: behavioral.talking,
-      excessiveMovement: behavioral.excessiveMovement,
+      eyesClosed,
+      talking,
+      excessiveMovement,
     };
 
-    applyStateBadge({ ...lastFaceSignals, tabAway });
+    const steppedAway = !rawFacePresent && faceAbsentSince !== null && (now - faceAbsentSince >= STEPPED_AWAY_MS);
+    applyStateBadge({ ...lastFaceSignals, tabAway, steppedAway });
     drawOverlay(result);
   } catch (err) {
     console.error("Detection frame error:", err);
@@ -407,7 +443,7 @@ function applyStateBadge(signals) {
   let label, cls;
   if (signals.tabAway) { label = "Tab switch"; cls = "alert"; }
   else if (signals.phoneDetected) { label = "Phone"; cls = "alert"; }
-  else if (!signals.facePresent) { label = "No face"; cls = "alert"; }
+  else if (!signals.facePresent) { label = signals.steppedAway ? "Stepped away" : "No face"; cls = "alert"; }
   else if (signals.eyesClosed) { label = "Eyes closed"; cls = "alert"; }
   else if (!signals.lookingAtScreen) { label = "Looking away"; cls = "away"; }
   else if (signals.excessiveMovement) { label = "Restless"; cls = "away"; }
@@ -433,6 +469,8 @@ async function startSession() {
   lookAwayStreak = 0;
   lookBackStreak = 0;
   smoothedLooking = true;
+  faceAbsentSince = null;
+  smoothedFacePresent = true;
   tabAway = document.hidden;
   chartLabels.length = 0;
   chartData.length = 0;
@@ -491,6 +529,7 @@ async function refreshSummaryFor(sessionId) {
   mTalking.textContent = s.n ? s.talkingSecs + "s" : "--";
   mMovement.textContent = s.n ? s.movementSecs + "s" : "--";
   mTabAway.textContent = s.n ? s.tabSwitches : "--";
+  mAway.textContent = s.n ? s.awayEvents : "--";
 }
 
 async function refreshHistory() {
@@ -536,6 +575,7 @@ clearDataLink.addEventListener("click", async () => {
   await refreshHistory();
   mAvg.textContent = mPresent.textContent = mLooking.textContent = mPhone.textContent = "--";
   mEyes.textContent = mTalking.textContent = mMovement.textContent = mTabAway.textContent = "--";
+  mAway.textContent = "--";
 });
 
 exportCsvLink.addEventListener("click", async () => {

@@ -112,7 +112,7 @@ const FocusDB = (() => {
       return {
         n: 0, avgScore: 0, pctPresent: 0, pctLooking: 0,
         phonePickups: 0, eyesClosedSecs: 0, talkingSecs: 0, movementSecs: 0,
-        tabAwaySecs: 0, tabSwitches: 0,
+        tabAwaySecs: 0, tabSwitches: 0, awayEvents: 0,
       };
     }
     const n = ticks.length;
@@ -125,12 +125,14 @@ const FocusDB = (() => {
     const movementSecs = ticks.filter((t) => t.excessiveMovement).length;
     const tabAwaySecs = ticks.filter((t) => t.tabAway).length;
     let tabSwitches = 0;
+    let awayEvents = 0;
     for (let i = 1; i < ticks.length; i++) {
       if (ticks[i].tabAway && !ticks[i - 1].tabAway) tabSwitches++;
+      if (!ticks[i].facePresent && ticks[i - 1].facePresent) awayEvents++;
     }
     return {
       n, avgScore, pctPresent, pctLooking, phonePickups,
-      eyesClosedSecs, talkingSecs, movementSecs, tabAwaySecs, tabSwitches,
+      eyesClosedSecs, talkingSecs, movementSecs, tabAwaySecs, tabSwitches, awayEvents,
     };
   }
 
@@ -149,7 +151,7 @@ const FocusDB = (() => {
     const sessions = await getSessions();
     const rows = [["id", "started_at", "ended_at", "mode", "label", "avg_score",
       "pct_present", "pct_looking", "phone_pickups", "eyes_closed_secs",
-      "talking_secs", "movement_secs", "tab_away_secs", "tab_switches"]];
+      "talking_secs", "movement_secs", "tab_away_secs", "tab_switches", "away_events"]];
     for (const s of sessions) {
       const ticks = await getTicks(s.id);
       const sum = summarize(ticks);
@@ -168,6 +170,7 @@ const FocusDB = (() => {
         sum.movementSecs,
         sum.tabAwaySecs,
         sum.tabSwitches,
+        sum.awayEvents,
       ]);
     }
     return rows.map((r) => r.join(",")).join("\n");

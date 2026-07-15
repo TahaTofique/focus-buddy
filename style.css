@@ -410,7 +410,7 @@ input:disabled, select:disabled { opacity: 0.55; }
 /* ---------- Stats ---------- */
 .stat-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 10px;
 }
 @media (max-width: 640px) {

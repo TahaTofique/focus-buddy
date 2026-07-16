@@ -38,6 +38,67 @@ switches from "No face" to "Stepped away" to distinguish a longer
 break from a momentary glitch. Each transition into sustained absence
 is also counted as an "Away event" in your session metrics/history.
 
+## Phone detection (accuracy)
+
+Reworked from the ground up — the original version just checked "is any
+hand within a wide circle around the face center", which fired just as
+easily for resting your chin on your hand or scratching your face as it
+did for actually holding a phone. The new `PhoneDetector` (in
+`signals.js`):
+
+- Checks proximity to the **ear region specifically** (via face-oval
+  landmarks near each ear), not the face center
+- Checks two points per hand (wrist + palm base), so an awkward wrist
+  angle doesn't get missed
+- Uses a **rolling-window ratio** ("near the ear for 60%+ of the last
+  1.5s, and that window has to actually span most of its 1.5s target")
+  instead of a bare consecutive-frame counter, so it can't be triggered
+  by a couple of lucky samples right after a half-second touch
+- Hysteresis on top of that ratio for the final on/off call
+
+Verified with synthetic tests: a hand resting at face-center no longer
+triggers it, a brief ~450ms touch doesn't either, and sustained contact
+near the ear does.
+
+## Persisted calibration, dark mode, and performance mode
+
+**Persisted calibration** — after a successful calibration, the
+baseline is saved to IndexedDB. Next time you start a session, "Use
+saved calibration" is checked by default and the live 3-second
+calibration is skipped entirely — useful if you're running several
+short sessions back to back. Uncheck it (or hit "Clear all data") to
+force a fresh calibration.
+
+**Dark mode** — toggle in the top-right. Preference is remembered
+across visits via `localStorage` (this is a real deployed site you
+control, not a sandboxed environment, so that's a reasonable place
+for a UI preference — session data itself still lives only in
+IndexedDB).
+
+**Performance mode** — a checkbox in session options that captures at
+480×360 instead of 640×480 and disables hand tracking (via Human's
+live-mutable `config` object) for that session, trading phone
+detection for lower CPU/GPU load. Worth enabling on slower machines.
+
+## Insights & PDF report
+
+The Insights card (computed entirely from your local session history,
+`insights.js`) shows: total sessions, minutes tracked, all-time average
+focus, current day streak, your best-performing label, your most
+common distraction type, and a trend sparkline across your last 20
+sessions.
+
+"Most common distraction type" compares different units (seconds of
+eyes-closed vs. count of phone pickups vs. count of tab switches, etc.)
+so it's directional, not a precise ranking — flagged here and in the
+UI copy rather than presented as more rigorous than it is.
+
+**PDF report** — via the "PDF report" link next to Export CSV,
+generates a downloadable summary (jsPDF, entirely client-side): the
+same insight stats, the trend chart as an embedded image, and a table
+of your 25 most recent sessions. Useful for attaching to a portfolio
+writeup or handing in as engagement evidence for a course.
+
 ## Two modes
 
 **Study Session** — for working alone. Talking is treated as a
@@ -107,9 +168,11 @@ something the app itself controls.
   while the tab is hidden, since a plain `setInterval` keeps ticking
   in the background for this specifically (unlike the camera loop,
   which uses `requestAnimationFrame` and pauses when hidden).
-- **Phone heuristic**: if a hand landmark stays near your face for
-  several consecutive frames (typical phone-check posture), it's
-  flagged. Still a geometric heuristic, not true object detection.
+- **Phone heuristic**: proximity to ear-region landmarks (not face
+  center), rolling-window ratio, and hysteresis — see the "Phone
+  detection" section above for the full rationale. Still a geometric
+  heuristic, not true object detection, but far less prone to firing
+  on chin-resting or face-scratching than the original version.
 - **Scoring**: `scorer.js` — explainable additive penalties per
   signal, with separate weight sets for each mode, fully auditable,
   no black box.
@@ -120,12 +183,13 @@ something the app itself controls.
 ## Files
 
 ```
-index.html   — layout (modern card-based UI, calibration overlay, score ring)
-style.css    — design system: soft gradients, glass cards, Inter/Lexend
+index.html   — layout (modern card-based UI, calibration overlay, score ring, insights)
+style.css    — design system: soft gradients, glass cards, Inter/Lexend, dark theme
 app.js       — webcam + calibration + detection loop + UI wiring
 scorer.js    — focus score logic (mode-aware multi-signal weighting)
-signals.js   — eye closure / talking / movement heuristics + calibration
-db.js        — IndexedDB storage + CSV export
+signals.js   — eye/talking/movement/phone heuristics, calibration, hysteresis
+insights.js  — cross-session aggregate stats (streaks, trends, top distraction)
+db.js        — IndexedDB storage (sessions, ticks, settings) + CSV export
 ```
 
 ## Tuning

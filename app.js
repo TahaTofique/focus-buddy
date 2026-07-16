@@ -18,7 +18,6 @@
  */
 
 // ---------- Config ----------
-const PHONE_HOLD_FRAMES = 8;       // consecutive frames hand-near-face before flagging
 const LOG_INTERVAL_MS = 1000;
 const CALIBRATION_MS = 3000;
 const LOOK_AWAY_STREAK = 5;        // consecutive bad frames before flagging "away"
@@ -57,7 +56,6 @@ let scorer = new FocusScorer();
 let signalTracker = new SignalTracker();
 let currentSessionId = null;
 let sessionTimer = null;
-let phoneStreak = 0;
 let running = false;
 let liveChart = null;
 let tabAway = false;
@@ -103,6 +101,16 @@ const exportCsvLink = document.getElementById("export-csv");
 const calibrationOverlay = document.getElementById("calibration-overlay");
 const calibProgress = document.getElementById("calib-progress");
 const calibCount = document.getElementById("calib-count");
+const themeToggle = document.getElementById("theme-toggle");
+const useSavedCalibrationCb = document.getElementById("use-saved-calibration");
+const calibSavedDate = document.getElementById("calib-saved-date");
+const performanceModeCb = document.getElementById("performance-mode");
+const inSessions = document.getElementById("in-sessions");
+const inMinutes = document.getElementById("in-minutes");
+const inAvg = document.getElementById("in-avg");
+const inStreak = document.getElementById("in-streak");
+const inHighlight = document.getElementById("in-highlight");
+const exportPdfLink = document.getElementById("export-pdf");
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 52;   // r=52, matches SVG
 const CALIB_CIRCUMFERENCE = 2 * Math.PI * 34;  // r=34, matches SVG
@@ -123,6 +131,14 @@ function applyModeUI() {
     : "e.g. SDA assignment";
 }
 modeSelect.addEventListener("change", applyModeUI);
+
+// ---------- Theme ----------
+themeToggle.addEventListener("click", () => {
+  const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  const next = current === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  localStorage.setItem("focusbuddy-theme", next);
+});
 
 // ---------- Clock ----------
 function tickClock() {
@@ -195,9 +211,11 @@ async function initModels() {
 }
 
 // ---------- Webcam ----------
-async function startWebcam() {
+async function startWebcam(performanceMode) {
   const stream = await navigator.mediaDevices.getUserMedia({
-    video: { width: 640, height: 480, facingMode: "user" },
+    video: performanceMode
+      ? { width: 480, height: 360, facingMode: "user" }
+      : { width: 640, height: 480, facingMode: "user" },
     audio: false,
   });
   video.srcObject = stream;
@@ -217,24 +235,6 @@ function getHeadPose(face) {
   const angle = face?.rotation?.angle;
   if (!angle) return null;
   return { yaw: angle.yaw || 0, pitch: angle.pitch || 0 };
-}
-
-function handNearFace(hands, face) {
-  if (!hands || !hands.length || !face) return false;
-  const box = face.box;
-  if (!box) return false;
-  const faceCenter = [box[0] + box[2] / 2, box[1] + box[3] / 2];
-  const faceScale = Math.max(box[2], box[3]);
-
-  for (const hand of hands) {
-    const wrist = hand.keypoints?.[0];
-    if (!wrist) continue;
-    const dx = wrist[0] - faceCenter[0];
-    const dy = wrist[1] - faceCenter[1];
-    const dist = Math.sqrt(dx * dx + dy * dy);
-    if (dist < faceScale * 1.3) return true;
-  }
-  return false;
 }
 
 function drawOverlay(result) {
@@ -306,7 +306,28 @@ async function runCalibration() {
     // EAR samples get dropped instead of dragging the baseline down.
     ear: ears.length >= 5 ? trimmedMeanLow(ears) : null,
     marNoise: mars.length >= 5 ? stddev(mars) : null,
+    savedAt: Date.now(),
   };
+  try {
+    await FocusDB.setSetting("calibration", calibration);
+    refreshCalibrationStatus();
+  } catch (err) {
+    console.error("Could not persist calibration:", err);
+  }
+}
+
+async function refreshCalibrationStatus() {
+  const saved = await FocusDB.getSetting("calibration").catch(() => null);
+  if (saved && saved.savedAt) {
+    const d = new Date(saved.savedAt);
+    calibSavedDate.textContent = `(${d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" })})`;
+    useSavedCalibrationCb.disabled = false;
+    useSavedCalibrationCb.checked = true;
+  } else {
+    calibSavedDate.textContent = "";
+    useSavedCalibrationCb.disabled = true;
+    useSavedCalibrationCb.checked = false;
+  }
 }
 
 // ---------- Main loop ----------
@@ -318,15 +339,13 @@ let lastFaceSignals = {
   facePresent: false, lookingAtScreen: false, phoneDetected: false,
   eyesClosed: false, talking: false, excessiveMovement: false,
 };
-let lookAwayStreak = 0;
-let lookBackStreak = 0;
-let smoothedLooking = true;
+let lookAwayHyst = new Hysteresis(LOOK_AWAY_STREAK, LOOK_BACK_STREAK);
 let faceAbsentSince = null;
 let smoothedFacePresent = true;
 
 function evaluateLooking(face) {
   const pose = getHeadPose(face);
-  if (!pose) return smoothedLooking; // fail-open: keep last known state if pose unavailable
+  if (!pose) return !lookAwayHyst.state; // fail-open: keep last known state if pose unavailable
 
   const baseYaw = calibration ? calibration.yaw : 0;
   const basePitch = calibration ? calibration.pitch : 0;
@@ -337,18 +356,10 @@ function evaluateLooking(face) {
   const dPitch = Math.abs(pose.pitch - basePitch);
   const rawLooking = dYaw < yawThresh && dPitch < pitchThresh;
 
-  // Hysteresis: require a streak before flipping, so single noisy frames
+  // Hysteresis: requires a streak before flipping, so single noisy frames
   // don't cause the badge/score to flicker.
-  if (rawLooking) {
-    lookBackStreak++;
-    lookAwayStreak = 0;
-    if (lookBackStreak >= LOOK_BACK_STREAK) smoothedLooking = true;
-  } else {
-    lookAwayStreak++;
-    lookBackStreak = 0;
-    if (lookAwayStreak >= LOOK_AWAY_STREAK) smoothedLooking = false;
-  }
-  return smoothedLooking;
+  const away = lookAwayHyst.update(!rawLooking);
+  return !away;
 }
 
 async function detectLoop() {
@@ -370,30 +381,32 @@ async function detectLoop() {
       // doesn't instantly zero the score like actually leaving would.
     }
 
-    let lookingAtScreen, eyesClosed, talking, excessiveMovement;
+    let lookingAtScreen, eyesClosed, talking, excessiveMovement, phoneDetected;
     if (rawFacePresent) {
       lookingAtScreen = evaluateLooking(face);
-      const behavioral = signalTracker.update(face.mesh || null, face.box || null);
+      const behavioral = signalTracker.update(face.mesh || null, face.box || null, result.hand);
       eyesClosed = behavioral.eyesClosed;
       talking = behavioral.talking;
       excessiveMovement = behavioral.excessiveMovement;
+      phoneDetected = behavioral.phoneDetected;
     } else if (smoothedFacePresent) {
       // Within grace period: no new landmark data this frame, so hold the
-      // last known behavioral signals rather than guessing.
-      ({ lookingAtScreen, eyesClosed, talking, excessiveMovement } = lastFaceSignals);
-      signalTracker.update(null, null);
+      // last known behavioral signals rather than guessing. Still feed
+      // hands through so a phone-check that started just before a brief
+      // tracking blip isn't lost.
+      ({ lookingAtScreen, eyesClosed, talking } = lastFaceSignals);
+      excessiveMovement = lastFaceSignals.excessiveMovement;
+      const behavioral = signalTracker.update(null, null, result.hand);
+      phoneDetected = behavioral.phoneDetected;
     } else {
       // Genuinely stepped away — these should read as false, not stale.
       lookingAtScreen = false;
       eyesClosed = false;
       talking = false;
       excessiveMovement = false;
-      signalTracker.update(null, null);
+      const behavioral = signalTracker.update(null, null, result.hand);
+      phoneDetected = behavioral.phoneDetected;
     }
-
-    const rawPhone = handNearFace(result.hand, face);
-    phoneStreak = rawPhone ? phoneStreak + 1 : 0;
-    const phoneDetected = phoneStreak >= PHONE_HOLD_FRAMES;
 
     lastFaceSignals = {
       facePresent: smoothedFacePresent,
@@ -456,19 +469,29 @@ function applyStateBadge(signals) {
 
 // ---------- Session control ----------
 async function startSession() {
-  await startWebcam();
+  const performanceMode = performanceModeCb.checked;
+  await startWebcam(performanceMode);
   startBtn.disabled = true;
-  await runCalibration();
+
+  // Human's config is read live on each detect() call, so toggling this
+  // before the session starts is enough — no need to recreate the model.
+  human.config.hand.enabled = !performanceMode;
+
+  const useSaved = useSavedCalibrationCb.checked && !useSavedCalibrationCb.disabled;
+  if (useSaved) {
+    const saved = await FocusDB.getSetting("calibration").catch(() => null);
+    calibration = saved || null;
+    if (!calibration) await runCalibration(); // saved calibration vanished somehow — fall back
+  } else {
+    await runCalibration();
+  }
 
   const mode = modeSelect.value;
   currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode);
   scorer = new FocusScorer({ mode });
   signalTracker.reset();
   signalTracker.applyCalibration(calibration ? { ear: calibration.ear, marNoise: calibration.marNoise } : null);
-  phoneStreak = 0;
-  lookAwayStreak = 0;
-  lookBackStreak = 0;
-  smoothedLooking = true;
+  lookAwayHyst.reset();
   faceAbsentSince = null;
   smoothedFacePresent = true;
   tabAway = document.hidden;
@@ -481,6 +504,8 @@ async function startSession() {
   labelInput.disabled = true;
   modeSelect.disabled = true;
   durationSelect.disabled = true;
+  useSavedCalibrationCb.disabled = true;
+  performanceModeCb.disabled = true;
 
   const durationMin = parseFloat(durationSelect.value);
   if (durationMin > 0) {
@@ -509,12 +534,15 @@ async function stopSession() {
   labelInput.disabled = false;
   modeSelect.disabled = false;
   durationSelect.disabled = false;
+  performanceModeCb.disabled = false;
+  await refreshCalibrationStatus(); // re-enables the checkbox if a baseline exists
   scoreValue.textContent = "--";
   ringProgress.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
   stateText.textContent = "Standby";
   stateBadge.className = "state-chip standby";
 
   await refreshHistory();
+  await refreshInsights();
 }
 
 // ---------- Summary / history ----------
@@ -560,6 +588,119 @@ async function refreshHistory() {
   historyBody.innerHTML = rows.join("");
 }
 
+async function getSessionsWithSummaries() {
+  const sessions = await FocusDB.getSessions();
+  return Promise.all(sessions.map(async (session) => {
+    const ticks = await FocusDB.getTicks(session.id);
+    return { session, summary: FocusDB.summarize(ticks) };
+  }));
+}
+
+// ---------- Insights ----------
+let trendChart = null;
+function initTrendChart() {
+  const ctx = document.getElementById("trend-chart").getContext("2d");
+  trendChart = new Chart(ctx, {
+    type: "line",
+    data: { labels: [], datasets: [{ data: [], borderColor: "#a855f7", borderWidth: 2, pointRadius: 2, pointBackgroundColor: "#a855f7", tension: 0.3, fill: false }] },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      scales: { x: { display: false }, y: { min: 0, max: 100, display: false } },
+      plugins: { legend: { display: false } },
+    },
+  });
+}
+
+async function refreshInsights() {
+  const withSummaries = await getSessionsWithSummaries();
+  const insights = FocusInsights.compute(withSummaries);
+
+  inSessions.textContent = insights.totalSessions || "--";
+  inMinutes.textContent = insights.totalSessions ? insights.totalMinutes : "--";
+  inAvg.textContent = insights.totalSessions ? insights.allTimeAvg : "--";
+  inStreak.textContent = insights.totalSessions ? insights.streak : "--";
+
+  if (insights.totalSessions) {
+    const bits = [];
+    if (insights.bestLabel) bits.push(`Best focus on <b>${insights.bestLabel.label}</b> (avg ${insights.bestLabel.avg})`);
+    if (insights.topDistraction) bits.push(`most common distraction: <b>${insights.topDistraction}</b>`);
+    inHighlight.innerHTML = bits.length ? bits.join(" · ") : "Keep logging sessions to see patterns here.";
+  } else {
+    inHighlight.textContent = "Log a few sessions to see patterns here.";
+  }
+
+  trendChart.data.labels = insights.trend.map((_, i) => i);
+  trendChart.data.datasets[0].data = insights.trend;
+  trendChart.update("none");
+}
+
+// ---------- PDF report ----------
+async function downloadPdfReport() {
+  const withSummaries = await getSessionsWithSummaries();
+  const insights = FocusInsights.compute(withSummaries);
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(18);
+  doc.text("Focus Buddy — Session Report", 14, 18);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  doc.setTextColor(120);
+  doc.text(`Generated ${new Date().toLocaleString()}`, 14, 25);
+
+  doc.setTextColor(20);
+  doc.setFontSize(12);
+  doc.setFont("helvetica", "bold");
+  doc.text("Summary", 14, 38);
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(10);
+  const summaryLines = [
+    `Total sessions: ${insights.totalSessions}`,
+    `Total minutes tracked: ${insights.totalMinutes}`,
+    `All-time average focus: ${insights.allTimeAvg}`,
+    `Current day streak: ${insights.streak}`,
+    insights.bestLabel ? `Best-performing label: ${insights.bestLabel.label} (avg ${insights.bestLabel.avg})` : null,
+    insights.topDistraction ? `Most common distraction: ${insights.topDistraction}` : null,
+  ].filter(Boolean);
+  summaryLines.forEach((line, i) => doc.text(line, 14, 46 + i * 6));
+
+  if (trendChart) {
+    const chartImg = trendChart.toBase64Image();
+    doc.addImage(chartImg, "PNG", 14, 46 + summaryLines.length * 6 + 6, 180, 45);
+  }
+
+  let y = 46 + summaryLines.length * 6 + 60;
+  doc.setFont("helvetica", "bold");
+  doc.setFontSize(12);
+  doc.text("Recent sessions", 14, y);
+  y += 8;
+  doc.setFont("helvetica", "normal");
+  doc.setFontSize(9);
+  const headers = ["Date", "Mode", "Label", "Avg", "Mins"];
+  const colX = [14, 45, 65, 130, 150];
+  headers.forEach((h, i) => doc.text(h, colX[i], y));
+  y += 5;
+  doc.setDrawColor(220);
+  doc.line(14, y - 3, 195, y - 3);
+
+  const recent = withSummaries
+    .filter((x) => x.session.endedAt)
+    .sort((a, b) => b.session.startedAt - a.session.startedAt)
+    .slice(0, 25);
+
+  for (const x of recent) {
+    if (y > 280) { doc.addPage(); y = 20; }
+    const date = new Date(x.session.startedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
+    const mins = Math.round((x.session.endedAt - x.session.startedAt) / 60000);
+    const row = [date, x.session.mode || "study", (x.session.label || "Untitled").slice(0, 22), String(Math.round(x.summary.avgScore || 0)), String(mins)];
+    row.forEach((cell, i) => doc.text(cell, colX[i], y));
+    y += 6;
+  }
+
+  doc.save(`focus-buddy-report-${new Date().toISOString().slice(0, 10)}.pdf`);
+}
+
 // ---------- Wiring ----------
 startBtn.addEventListener("click", () => startSession().catch((err) => {
   console.error(err);
@@ -570,9 +711,11 @@ startBtn.addEventListener("click", () => startSession().catch((err) => {
 stopBtn.addEventListener("click", () => stopSession());
 
 clearDataLink.addEventListener("click", async () => {
-  if (!confirm("This will permanently delete all locally stored session data. Continue?")) return;
+  if (!confirm("This will permanently delete all locally stored session data, including any saved calibration. Continue?")) return;
   await FocusDB.clearAll();
   await refreshHistory();
+  await refreshInsights();
+  await refreshCalibrationStatus();
   mAvg.textContent = mPresent.textContent = mLooking.textContent = mPhone.textContent = "--";
   mEyes.textContent = mTalking.textContent = mMovement.textContent = mTabAway.textContent = "--";
   mAway.textContent = "--";
@@ -591,11 +734,19 @@ exportCsvLink.addEventListener("click", async () => {
   URL.revokeObjectURL(url);
 });
 
+exportPdfLink.addEventListener("click", () => downloadPdfReport().catch((err) => {
+  console.error(err);
+  alert("Could not generate PDF report: " + err.message);
+}));
+
 // ---------- Init ----------
 (async function init() {
   initChart();
+  initTrendChart();
   applyModeUI();
   startBtn.disabled = true;
   await initModels();
   await refreshHistory();
+  await refreshInsights();
+  await refreshCalibrationStatus();
 })();

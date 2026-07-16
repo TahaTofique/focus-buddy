@@ -8,7 +8,7 @@
 
 const FocusDB = (() => {
   const DB_NAME = "focus_buddy";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2; // v2 adds the "settings" store (persisted calibration, etc.)
   let dbPromise = null;
 
   function open() {
@@ -25,11 +25,44 @@ const FocusDB = (() => {
           const store = db.createObjectStore("ticks", { keyPath: "id", autoIncrement: true });
           store.createIndex("sessionId", "sessionId");
         }
+        if (!db.objectStoreNames.contains("settings")) {
+          db.createObjectStore("settings"); // out-of-line keys, e.g. "calibration"
+        }
       };
       req.onsuccess = (e) => resolve(e.target.result);
       req.onerror = (e) => reject(e.target.error);
     });
     return dbPromise;
+  }
+
+  async function setSetting(key, value) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("settings", "readwrite");
+      tx.objectStore("settings").put(value, key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async function getSetting(key) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("settings", "readonly");
+      const req = tx.objectStore("settings").get(key);
+      req.onsuccess = () => resolve(req.result !== undefined ? req.result : null);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async function deleteSetting(key) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("settings", "readwrite");
+      tx.objectStore("settings").delete(key);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
   }
 
   async function startSession(label, mode = "study") {
@@ -139,9 +172,10 @@ const FocusDB = (() => {
   async function clearAll() {
     const db = await open();
     return new Promise((resolve, reject) => {
-      const tx = db.transaction(["sessions", "ticks"], "readwrite");
+      const tx = db.transaction(["sessions", "ticks", "settings"], "readwrite");
       tx.objectStore("sessions").clear();
       tx.objectStore("ticks").clear();
+      tx.objectStore("settings").clear();
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -176,5 +210,8 @@ const FocusDB = (() => {
     return rows.map((r) => r.join(",")).join("\n");
   }
 
-  return { startSession, endSession, logTick, getSessions, getTicks, summarize, clearAll, exportCsv };
+  return {
+    startSession, endSession, logTick, getSessions, getTicks, summarize, clearAll, exportCsv,
+    setSetting, getSetting, deleteSetting,
+  };
 })();

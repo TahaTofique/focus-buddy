@@ -37,6 +37,8 @@ const MOUTH_TOP = 13;
 const MOUTH_BOTTOM = 14;
 const MOUTH_LEFT = 78;
 const MOUTH_RIGHT = 308;
+const LEFT_EAR = 234;   // face-oval edge point near the left ear
+const RIGHT_EAR = 454;  // face-oval edge point near the right ear
 
 function dist(p, q) {
   const dx = p[0] - q[0];
@@ -113,6 +115,86 @@ class Hysteresis {
   }
 }
 
+/**
+ * PhoneDetector — a considerably more precise replacement for the old
+ * "is any hand within a circle around the face center" heuristic, which
+ * fired just as easily for resting your chin on your hand, scratching
+ * your face, or adjusting glasses as it did for actually holding a phone
+ * to your ear.
+ *
+ * Improvements:
+ *   - Checks proximity to the EAR region specifically (via face-oval
+ *     landmarks near each ear), not the face center — a phone-to-ear
+ *     posture is anatomically near the ear, not the middle of the face.
+ *   - Checks two points per hand (wrist + palm/middle-finger base), so
+ *     a hand angled awkwardly at the wrist doesn't get missed.
+ *   - Uses a ROLLING-WINDOW RATIO (e.g. "near ear for 60% of the last
+ *     1.5s") instead of a hard consecutive-frame counter, so one or two
+ *     missed detections don't reset progress back to zero.
+ *   - Hysteresis on top of that ratio for the final on/off decision.
+ */
+class PhoneDetector {
+  constructor({
+    windowMs = 1500,
+    ratioThreshold = 0.6,
+    proximityFactor = 0.38, // fraction of face scale counted as "near the ear" — tight, since ear-to-ear spans roughly the whole face width
+    hysteresisOn = 2,
+    hysteresisOff = 3,
+  } = {}) {
+    this.windowMs = windowMs;
+    this.ratioThreshold = ratioThreshold;
+    this.proximityFactor = proximityFactor;
+    this._history = []; // [{ t, near }]
+    this._hyst = new Hysteresis(hysteresisOn, hysteresisOff);
+  }
+
+  reset() {
+    this._history = [];
+    this._hyst.reset();
+  }
+
+  /**
+   * @param {Array|null} hands - result.hand from Human (array of hand objects with .keypoints)
+   * @param {Array|null} mesh - face.mesh, or null if no face this frame
+   * @param {Array|null} box - face.box, or null if no face this frame
+   */
+  update(hands, mesh, box) {
+    const now = Date.now();
+    let near = false;
+
+    if (hands && hands.length && mesh && box) {
+      const leftEar = mesh[LEFT_EAR];
+      const rightEar = mesh[RIGHT_EAR];
+      const faceScale = Math.max(box[2], box[3]) || 1;
+      const threshold = faceScale * this.proximityFactor;
+
+      outer:
+      for (const hand of hands) {
+        const candidatePoints = [hand.keypoints?.[0], hand.keypoints?.[9]].filter(Boolean);
+        for (const p of candidatePoints) {
+          if (leftEar && dist(p, leftEar) < threshold) { near = true; break outer; }
+          if (rightEar && dist(p, rightEar) < threshold) { near = true; break outer; }
+        }
+      }
+    }
+
+    this._history.push({ t: now, near });
+    this._history = this._history.filter((s) => now - s.t <= this.windowMs);
+
+    // Require the tracked window to actually span most of its target
+    // duration before trusting the ratio — otherwise a brief touch,
+    // padded by a couple of later "false" samples, can look like a
+    // sustained 60% ratio over a artificially short span.
+    let raw = false;
+    const spanMs = this._history.length ? now - this._history[0].t : 0;
+    if (this._history.length >= 4 && spanMs >= this.windowMs * 0.6) {
+      const ratio = this._history.filter((s) => s.near).length / this._history.length;
+      raw = ratio >= this.ratioThreshold;
+    }
+    return this._hyst.update(raw);
+  }
+}
+
 class SignalTracker {
   constructor({
     // Fallback generic thresholds, used only when no calibration is
@@ -143,6 +225,7 @@ class SignalTracker {
     this._earEMA = null;
     this._talkHyst = new Hysteresis(...talkHysteresis);
     this._moveHyst = new Hysteresis(...movementHysteresis);
+    this._phone = new PhoneDetector();
   }
 
   /**
@@ -173,20 +256,23 @@ class SignalTracker {
     this._earEMA = null;
     this._talkHyst.reset();
     this._moveHyst.reset();
+    this._phone.reset();
   }
 
   /**
    * @param {Array} mesh - face.mesh array of [x,y,z] points, or null
    * @param {Array} box - face.box [x,y,w,h], or null
-   * @returns {{eyesClosed: boolean, talking: boolean, excessiveMovement: boolean, ear: number|null, mar: number|null}}
+   * @param {Array} hands - result.hand from Human, or null
+   * @returns {{eyesClosed: boolean, talking: boolean, excessiveMovement: boolean, phoneDetected: boolean, ear: number|null, mar: number|null}}
    */
-  update(mesh, box) {
+  update(mesh, box, hands = null) {
     const now = Date.now();
+    const phoneDetected = this._phone.update(hands, mesh, box);
 
     if (!mesh || !box) {
       this._eyesClosedSince = null;
       this._earEMA = null;
-      return { eyesClosed: false, talking: false, excessiveMovement: false, ear: null, mar: null };
+      return { eyesClosed: false, talking: false, excessiveMovement: false, phoneDetected, ear: null, mar: null };
     }
 
     // --- Eye closure (EMA-smoothed EAR + sustained-duration check) ---
@@ -255,6 +341,6 @@ class SignalTracker {
     }
     const excessiveMovement = this._moveHyst.update(rawMovement);
 
-    return { eyesClosed, talking, excessiveMovement, ear, mar };
+    return { eyesClosed, talking, excessiveMovement, phoneDetected, ear, mar };
   }
 }

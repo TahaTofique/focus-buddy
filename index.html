@@ -89,6 +89,18 @@
           <p class="calib-sub">Sit naturally and look at the screen — this personalizes accuracy to your camera and lighting.</p>
         </div>
       </div>
+
+      <!-- Attendance-only mode: no camera, just a duration log -->
+      <div id="attendance-panel" class="calibration-overlay hidden" style="background: rgba(16,17,29,0.97);">
+        <div class="calibration-box">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" style="margin: 0 auto 14px; display: block;">
+            <circle cx="12" cy="12" r="9" stroke="rgba(255,255,255,0.4)" stroke-width="2"/>
+            <path d="M12 7v5l3.5 2" stroke="#a855f7" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <p class="calib-title" id="attendance-timer">00:00</p>
+          <p class="calib-sub">Attendance-only mode — no camera or engagement scoring, just a timestamped duration log.</p>
+        </div>
+      </div>
     </div>
 
     <div class="controls">
@@ -101,6 +113,7 @@
         <select id="mode-select">
           <option value="study" selected>Study</option>
           <option value="meeting">Meeting / Lecture</option>
+          <option value="attendance">Attendance only</option>
         </select>
       </div>
       <div class="field field-narrow">
@@ -121,6 +134,18 @@
         </div>
       </div>
     </div>
+
+    <div class="controls-row2">
+      <div class="field field-narrow">
+        <label>Project / client <span class="label-optional">(optional)</span></label>
+        <input id="session-project" type="text" placeholder="e.g. Client A" maxlength="40">
+      </div>
+      <div class="field field-grow">
+        <label>Notes <span class="label-optional">(autosaves during session)</span></label>
+        <textarea id="session-notes" rows="1" placeholder="Action items, notes..."></textarea>
+      </div>
+    </div>
+
     <p id="mode-hint" class="hint"></p>
 
     <div class="options-row">
@@ -132,6 +157,10 @@
       <label class="option-toggle">
         <input type="checkbox" id="performance-mode">
         <span>Performance mode (lower res, no hand tracking)</span>
+      </label>
+      <label class="option-toggle">
+        <input type="checkbox" id="redacted-mode">
+        <span>Redacted exports (share-safe — summary only, no signal breakdown)</span>
       </label>
     </div>
   </section>
@@ -213,7 +242,12 @@
     </div>
 
     <div class="card insights-card">
-      <div class="card-head"><h2>Insights</h2></div>
+      <div class="card-head">
+        <h2>Insights</h2>
+        <select id="insights-project-filter" class="project-filter">
+          <option value="">All projects</option>
+        </select>
+      </div>
       <div class="insights-grid">
         <div class="insight-tile">
           <span id="in-sessions" class="stat-value">--</span>
@@ -242,7 +276,9 @@
       <div class="card-head">
         <h2>History</h2>
         <span>
-          <span id="export-csv" class="link">Export CSV</span>
+          <span id="export-csv" class="link">CSV</span>
+          <span style="color: var(--text-faint); margin: 0 4px;">·</span>
+          <span id="export-timesheet" class="link">Timesheet CSV</span>
           <span style="color: var(--text-faint); margin: 0 4px;">·</span>
           <span id="export-pdf" class="link">PDF report</span>
         </span>

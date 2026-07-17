@@ -65,13 +65,15 @@ const FocusDB = (() => {
     });
   }
 
-  async function startSession(label, mode = "study") {
+  async function startSession(label, mode = "study", project = "") {
     const db = await open();
     return new Promise((resolve, reject) => {
       const tx = db.transaction("sessions", "readwrite");
       const req = tx.objectStore("sessions").add({
         label: label || "",
         mode,
+        project: project || "",
+        notes: "",
         startedAt: Date.now(),
         endedAt: null,
       });
@@ -90,6 +92,25 @@ const FocusDB = (() => {
         const record = getReq.result;
         if (record) {
           record.endedAt = Date.now();
+          store.put(record);
+        }
+        resolve();
+      };
+      getReq.onerror = () => reject(getReq.error);
+    });
+  }
+
+  /** Generic partial update — used for notes autosave and project edits. */
+  async function updateSession(sessionId, patch) {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction("sessions", "readwrite");
+      const store = tx.objectStore("sessions");
+      const getReq = store.get(sessionId);
+      getReq.onsuccess = () => {
+        const record = getReq.result;
+        if (record) {
+          Object.assign(record, patch);
           store.put(record);
         }
         resolve();
@@ -183,7 +204,7 @@ const FocusDB = (() => {
 
   async function exportCsv() {
     const sessions = await getSessions();
-    const rows = [["id", "started_at", "ended_at", "mode", "label", "avg_score",
+    const rows = [["id", "started_at", "ended_at", "mode", "project", "label", "notes", "avg_score",
       "pct_present", "pct_looking", "phone_pickups", "eyes_closed_secs",
       "talking_secs", "movement_secs", "tab_away_secs", "tab_switches", "away_events"]];
     for (const s of sessions) {
@@ -194,7 +215,9 @@ const FocusDB = (() => {
         new Date(s.startedAt).toISOString(),
         s.endedAt ? new Date(s.endedAt).toISOString() : "",
         s.mode || "study",
+        (s.project || "").replace(/,/g, ";"),
         (s.label || "").replace(/,/g, ";"),
+        (s.notes || "").replace(/,/g, ";").replace(/\n/g, " | "),
         sum.avgScore.toFixed(1),
         (sum.pctPresent * 100).toFixed(0),
         (sum.pctLooking * 100).toFixed(0),
@@ -210,8 +233,31 @@ const FocusDB = (() => {
     return rows.map((r) => r.join(",")).join("\n");
   }
 
+  /**
+   * Timesheet-format export: Date, Project, Task, Duration (decimal
+   * hours), Notes — the shape most time-tracking/billing tools (Toggl,
+   * Harvest, etc.) expect for CSV import. Deliberately omits engagement
+   * metrics entirely; this is for time accounting, not attention data.
+   */
+  async function exportTimesheetCsv() {
+    const sessions = await getSessions();
+    const rows = [["Date", "Project", "Task", "Duration (hours)", "Notes"]];
+    for (const s of sessions) {
+      if (!s.endedAt) continue; // only completed sessions have a duration
+      const hours = (s.endedAt - s.startedAt) / 3600000;
+      rows.push([
+        new Date(s.startedAt).toLocaleDateString("en-CA"), // YYYY-MM-DD, widely accepted
+        (s.project || "").replace(/,/g, ";"),
+        (s.label || "Untitled").replace(/,/g, ";"),
+        hours.toFixed(2),
+        (s.notes || "").replace(/,/g, ";").replace(/\n/g, " | "),
+      ]);
+    }
+    return rows.map((r) => r.join(",")).join("\n");
+  }
+
   return {
-    startSession, endSession, logTick, getSessions, getTicks, summarize, clearAll, exportCsv,
-    setSetting, getSetting, deleteSetting,
+    startSession, endSession, updateSession, logTick, getSessions, getTicks, summarize, clearAll,
+    exportCsv, exportTimesheetCsv, setSetting, getSetting, deleteSetting,
   };
 })();

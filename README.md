@@ -99,7 +99,55 @@ same insight stats, the trend chart as an embedded image, and a table
 of your 25 most recent sessions. Useful for attaching to a portfolio
 writeup or handing in as engagement evidence for a course.
 
-## Two modes
+## Sharing with someone else (redacted reports, copy-as-email)
+
+Anything shareable here is something **you** choose to generate and
+send — never automatic, never live-viewable by someone else. That
+distinction matters: this stays a self-monitoring tool, not a
+surveillance one.
+
+- **Copy summary** — the small copy icon next to any session in
+  History copies a short plain-text summary to your clipboard: title,
+  project, date, duration, and one overall engagement number. No
+  phone/eyes/talking/movement breakdown, no tab-switch counts —
+  appropriate to paste into an email or chat message.
+- **Redacted exports (share-safe)** — a checkbox in session options.
+  When checked, the PDF report drops the "most common distraction"
+  line and is titled "Meeting Engagement Summary" instead of "Focus
+  Buddy — Session Report" — a version built to hand to someone else,
+  not to keep for your own detailed review.
+- The full (non-redacted) PDF, CSV, and Insights view are always
+  available for your own use regardless of this toggle — it only
+  affects what a report built *for sharing* includes.
+
+## Meeting notes & project tagging
+
+- A **Notes** field is available during any session — action items,
+  what was discussed, whatever's useful. Autosaves ~800ms after you
+  stop typing (no save button needed), stored with the session.
+  Notes show as a small icon (hover for the full text) in History,
+  and are included in the detailed CSV export and redacted summaries.
+- A **Project/client** tag lets you organize sessions beyond the
+  per-meeting label — e.g. label "Sprint standup", project "Internal";
+  label "Kickoff call", project "Client A". The Insights card has a
+  project filter dropdown so you can see stats scoped to one project
+  ("how did my Client A calls go this month?").
+
+## Attendance-only mode
+
+For meetings where you don't want engagement scrutiny at all — just
+proof you were there and for how long. Selecting "Attendance only" as
+the mode:
+
+- Never requests camera access, never runs calibration or detection
+- Just starts a timer and logs start/end timestamps
+- Shows in History with duration instead of a focus score
+- Feeds into the **Timesheet CSV** export (Date, Project, Task,
+  Duration in decimal hours, Notes) — shaped for tools like Toggl or
+  Harvest, deliberately omitting engagement data entirely since this
+  mode is for time accounting, not attention data.
+
+## Three modes
 
 **Study Session** — for working alone. Talking is treated as a
 distraction (on a call, chatting) like any other signal.
@@ -110,6 +158,9 @@ speaking time is tracked as a positive stat. The main distraction
 signal becomes **switching to other browser tabs** mid-meeting (email,
 other sites), tracked via the Page Visibility API and penalized more
 heavily than in study mode.
+
+**Attendance only** — no camera, no scoring, just a duration log. See
+the "Attendance-only mode" section above.
 
 Pick the mode from the dropdown before starting a session — it
 changes the scoring weights, badge labels, and the metric names.
@@ -185,11 +236,12 @@ something the app itself controls.
 ```
 index.html   — layout (modern card-based UI, calibration overlay, score ring, insights)
 style.css    — design system: soft gradients, glass cards, Inter/Lexend, dark theme
-app.js       — webcam + calibration + detection loop + UI wiring
+app.js       — webcam + calibration + detection loop + UI wiring + reports
 scorer.js    — focus score logic (mode-aware multi-signal weighting)
 signals.js   — eye/talking/movement/phone heuristics, calibration, hysteresis
-insights.js  — cross-session aggregate stats (streaks, trends, top distraction)
-db.js        — IndexedDB storage (sessions, ticks, settings) + CSV export
+insights.js  — cross-session aggregate stats + redacted summary formatting
+db.js        — IndexedDB storage (sessions incl. project/notes, ticks, settings)
+              + CSV export + timesheet CSV export
 ```
 
 ## Tuning

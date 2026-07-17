@@ -111,6 +111,13 @@ const inAvg = document.getElementById("in-avg");
 const inStreak = document.getElementById("in-streak");
 const inHighlight = document.getElementById("in-highlight");
 const exportPdfLink = document.getElementById("export-pdf");
+const sessionProject = document.getElementById("session-project");
+const sessionNotes = document.getElementById("session-notes");
+const attendancePanel = document.getElementById("attendance-panel");
+const attendanceTimerEl = document.getElementById("attendance-timer");
+const redactedModeCb = document.getElementById("redacted-mode");
+const insightsProjectFilter = document.getElementById("insights-project-filter");
+const exportTimesheetLink = document.getElementById("export-timesheet");
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 52;   // r=52, matches SVG
 const CALIB_CIRCUMFERENCE = 2 * Math.PI * 34;  // r=34, matches SVG
@@ -120,6 +127,7 @@ calibProgress.style.strokeDasharray = String(CALIB_CIRCUMFERENCE);
 const MODE_HINTS = {
   study: "Camera stream is processed frame-by-frame in this tab only. No frame is ever stored — only a numeric score.",
   meeting: "Meeting mode: speaking is not penalized. Switching to other browser tabs during the session is tracked as the main distraction signal.",
+  attendance: "Attendance-only mode: no camera is used at all — just a timestamped duration log for timesheets or attendance records.",
 };
 
 function applyModeUI() {
@@ -128,9 +136,26 @@ function applyModeUI() {
   mTalkingLabel.textContent = mode === "meeting" ? "Speaking" : "Talking";
   labelInput.placeholder = mode === "meeting"
     ? "meeting/lecture title (e.g. Sprint standup)"
-    : "e.g. SDA assignment";
+    : mode === "attendance"
+      ? "e.g. All-hands meeting"
+      : "e.g. SDA assignment";
+
+  const isAttendance = mode === "attendance";
+  attendancePanel.classList.toggle("hidden", !isAttendance);
+  useSavedCalibrationCb.closest(".option-toggle").classList.toggle("hidden", isAttendance);
+  performanceModeCb.closest(".option-toggle").classList.toggle("hidden", isAttendance);
 }
 modeSelect.addEventListener("change", applyModeUI);
+
+// ---------- Notes autosave ----------
+let notesSaveTimer = null;
+sessionNotes.addEventListener("input", () => {
+  if (!currentSessionId) return;
+  clearTimeout(notesSaveTimer);
+  notesSaveTimer = setTimeout(() => {
+    FocusDB.updateSession(currentSessionId, { notes: sessionNotes.value }).catch((e) => console.error(e));
+  }, 800);
+});
 
 // ---------- Theme ----------
 themeToggle.addEventListener("click", () => {
@@ -430,6 +455,9 @@ async function detectLoop() {
 // (not rAF) so it keeps firing even while the tab is hidden, which is
 // exactly the period we need to capture in meeting mode.
 let scoreTickInterval = null;
+let activeMode = null;
+let attendanceTimerInterval = null;
+let attendanceStartTime = null;
 function scoreTick() {
   if (!running) return;
   const signals = { ...lastFaceSignals, tabAway };
@@ -469,6 +497,32 @@ function applyStateBadge(signals) {
 
 // ---------- Session control ----------
 async function startSession() {
+  const mode = modeSelect.value;
+  activeMode = mode;
+  const project = sessionProject.value.trim();
+
+  if (mode === "attendance") {
+    startBtn.disabled = true;
+    currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode, project);
+    sessionNotes.value = "";
+    sessionNotes.disabled = false;
+
+    running = true;
+    stopBtn.disabled = false;
+    labelInput.disabled = true;
+    modeSelect.disabled = true;
+    durationSelect.disabled = true;
+    sessionProject.disabled = true;
+
+    attendanceStartTime = Date.now();
+    updateAttendanceTimer();
+    attendanceTimerInterval = setInterval(updateAttendanceTimer, 1000);
+
+    const durationMin = parseFloat(durationSelect.value);
+    if (durationMin > 0) sessionTimer = setTimeout(stopSession, durationMin * 60000);
+    return;
+  }
+
   const performanceMode = performanceModeCb.checked;
   await startWebcam(performanceMode);
   startBtn.disabled = true;
@@ -486,8 +540,9 @@ async function startSession() {
     await runCalibration();
   }
 
-  const mode = modeSelect.value;
-  currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode);
+  currentSessionId = await FocusDB.startSession(labelInput.value.trim(), mode, project);
+  sessionNotes.value = "";
+  sessionNotes.disabled = false;
   scorer = new FocusScorer({ mode });
   signalTracker.reset();
   signalTracker.applyCalibration(calibration ? { ear: calibration.ear, marNoise: calibration.marNoise } : null);
@@ -504,6 +559,7 @@ async function startSession() {
   labelInput.disabled = true;
   modeSelect.disabled = true;
   durationSelect.disabled = true;
+  sessionProject.disabled = true;
   useSavedCalibrationCb.disabled = true;
   performanceModeCb.disabled = true;
 
@@ -516,30 +572,45 @@ async function startSession() {
   scoreTickInterval = setInterval(scoreTick, LOG_INTERVAL_MS);
 }
 
+function updateAttendanceTimer() {
+  const elapsed = Math.floor((Date.now() - attendanceStartTime) / 1000);
+  const mm = String(Math.floor(elapsed / 60)).padStart(2, "0");
+  const ss = String(elapsed % 60).padStart(2, "0");
+  attendanceTimerEl.textContent = `${mm}:${ss}`;
+}
+
 async function stopSession() {
   running = false;
   if (sessionTimer) clearTimeout(sessionTimer);
   if (scoreTickInterval) clearInterval(scoreTickInterval);
-  stopWebcam();
-  octx.clearRect(0, 0, overlay.width, overlay.height);
+  if (attendanceTimerInterval) { clearInterval(attendanceTimerInterval); attendanceTimerInterval = null; }
+
+  if (activeMode !== "attendance") {
+    stopWebcam();
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+  }
 
   if (currentSessionId) {
     await FocusDB.endSession(currentSessionId);
     await refreshSummaryFor(currentSessionId);
   }
   currentSessionId = null;
+  sessionNotes.disabled = true;
 
   startBtn.disabled = false;
   stopBtn.disabled = true;
   labelInput.disabled = false;
   modeSelect.disabled = false;
   durationSelect.disabled = false;
+  sessionProject.disabled = false;
   performanceModeCb.disabled = false;
   await refreshCalibrationStatus(); // re-enables the checkbox if a baseline exists
   scoreValue.textContent = "--";
   ringProgress.style.strokeDashoffset = String(RING_CIRCUMFERENCE);
   stateText.textContent = "Standby";
   stateBadge.className = "state-chip standby";
+  attendanceTimerEl.textContent = "00:00";
+  activeMode = null;
 
   await refreshHistory();
   await refreshInsights();
@@ -560,6 +631,18 @@ async function refreshSummaryFor(sessionId) {
   mAway.textContent = s.n ? s.awayEvents : "--";
 }
 
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+const MODE_DISPLAY = {
+  study: ["study", "Study"],
+  meeting: ["meeting", "Meet"],
+  attendance: ["attendance", "Attend"],
+};
+
 async function refreshHistory() {
   const sessions = await FocusDB.getSessions();
   if (!sessions.length) {
@@ -572,21 +655,61 @@ async function refreshHistory() {
     const date = new Date(s.startedAt).toLocaleString("en-GB", {
       day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
     });
-    const modeCls = s.mode === "meeting" ? "meeting" : "study";
-    const modeLabel = s.mode === "meeting" ? "Meet" : "Study";
-    const score = sum.n ? Math.round(sum.avgScore) : "--";
-    const scoreColor = !sum.n ? "var(--text-faint)" : score >= 70 ? "var(--green)" : score >= 40 ? "var(--amber)" : "var(--red)";
+    const [modeCls, modeLabel] = MODE_DISPLAY[s.mode] || MODE_DISPLAY.study;
+    const mins = s.endedAt ? Math.round((s.endedAt - s.startedAt) / 60000) : null;
+
+    let scoreDisplay, scoreColor;
+    if (s.mode === "attendance") {
+      scoreDisplay = mins !== null ? `${mins}m` : "--";
+      scoreColor = "var(--teal)";
+    } else {
+      const score = sum.n ? Math.round(sum.avgScore) : "--";
+      scoreDisplay = score;
+      scoreColor = !sum.n ? "var(--text-faint)" : score >= 70 ? "var(--green)" : score >= 40 ? "var(--amber)" : "var(--red)";
+    }
+
+    const projectChip = s.project ? `<span class="history-project">${escapeHtml(s.project)}</span>` : "";
+    const notesIcon = s.notes
+      ? `<svg class="history-notes-icon" width="12" height="12" viewBox="0 0 24 24" fill="none" title="${escapeHtml(s.notes)}"><path d="M4 4h16v12H8l-4 4V4z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>`
+      : "";
+
     return `<div class="history-row">
       <span class="history-mode-chip ${modeCls}">${modeLabel}</span>
+      ${projectChip}
       <div class="history-main">
-        <div class="history-label">${s.label || "Untitled"}</div>
+        <div class="history-label">${escapeHtml(s.label || "Untitled")}${notesIcon}</div>
         <div class="history-date">${date}</div>
       </div>
-      <span class="history-score" style="color:${scoreColor}">${score}</span>
+      <div class="history-actions">
+        <button class="history-copy-btn" data-session-id="${s.id}" title="Copy share-safe summary">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none"><rect x="9" y="9" width="11" height="11" rx="2" stroke="currentColor" stroke-width="2"/><path d="M5 15V5a2 2 0 012-2h10" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <span class="history-score" style="color:${scoreColor}">${scoreDisplay}</span>
+      </div>
     </div>`;
   }));
   historyBody.innerHTML = rows.join("");
 }
+
+historyBody.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".history-copy-btn");
+  if (!btn) return;
+  const sessionId = Number(btn.dataset.sessionId);
+  const sessions = await FocusDB.getSessions();
+  const session = sessions.find((s) => s.id === sessionId);
+  if (!session) return;
+  const ticks = await FocusDB.getTicks(sessionId);
+  const summary = FocusDB.summarize(ticks);
+  const text = FocusInsights.formatRedactedSummary(session, summary);
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none"><path d="M20 6L9 17l-5-5" stroke="#16a34a" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+    setTimeout(refreshHistory, 1400);
+  } catch (err) {
+    console.error("Clipboard write failed:", err);
+    alert("Couldn't access the clipboard. Here's the summary to copy manually:\n\n" + text);
+  }
+});
 
 async function getSessionsWithSummaries() {
   const sessions = await FocusDB.getSessions();
@@ -613,7 +736,15 @@ function initTrendChart() {
 
 async function refreshInsights() {
   const withSummaries = await getSessionsWithSummaries();
-  const insights = FocusInsights.compute(withSummaries);
+
+  // Repopulate the project filter without losing the current selection.
+  const currentSelection = insightsProjectFilter.value;
+  const projects = FocusInsights.listProjects(withSummaries);
+  insightsProjectFilter.innerHTML = '<option value="">All projects</option>' +
+    projects.map((p) => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join("");
+  if (projects.includes(currentSelection)) insightsProjectFilter.value = currentSelection;
+
+  const insights = FocusInsights.compute(withSummaries, insightsProjectFilter.value || null);
 
   inSessions.textContent = insights.totalSessions || "--";
   inMinutes.textContent = insights.totalSessions ? insights.totalMinutes : "--";
@@ -633,17 +764,19 @@ async function refreshInsights() {
   trendChart.data.datasets[0].data = insights.trend;
   trendChart.update("none");
 }
+insightsProjectFilter.addEventListener("change", () => refreshInsights());
 
 // ---------- PDF report ----------
 async function downloadPdfReport() {
   const withSummaries = await getSessionsWithSummaries();
   const insights = FocusInsights.compute(withSummaries);
+  const redacted = redactedModeCb.checked;
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
 
   doc.setFont("helvetica", "bold");
   doc.setFontSize(18);
-  doc.text("Focus Buddy — Session Report", 14, 18);
+  doc.text(redacted ? "Meeting Engagement Summary" : "Focus Buddy — Session Report", 14, 18);
   doc.setFont("helvetica", "normal");
   doc.setFontSize(10);
   doc.setTextColor(120);
@@ -661,7 +794,10 @@ async function downloadPdfReport() {
     `All-time average focus: ${insights.allTimeAvg}`,
     `Current day streak: ${insights.streak}`,
     insights.bestLabel ? `Best-performing label: ${insights.bestLabel.label} (avg ${insights.bestLabel.avg})` : null,
-    insights.topDistraction ? `Most common distraction: ${insights.topDistraction}` : null,
+    // Redacted mode drops the distraction-pattern line — appropriate for
+    // a summary you'd hand to someone else, since it reveals behavioral
+    // detail rather than just outcomes.
+    (!redacted && insights.topDistraction) ? `Most common distraction: ${insights.topDistraction}` : null,
   ].filter(Boolean);
   summaryLines.forEach((line, i) => doc.text(line, 14, 46 + i * 6));
 
@@ -677,8 +813,8 @@ async function downloadPdfReport() {
   y += 8;
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9);
-  const headers = ["Date", "Mode", "Label", "Avg", "Mins"];
-  const colX = [14, 45, 65, 130, 150];
+  const headers = ["Date", "Project", "Label", "Avg", "Mins"];
+  const colX = [14, 45, 85, 155, 175];
   headers.forEach((h, i) => doc.text(h, colX[i], y));
   y += 5;
   doc.setDrawColor(220);
@@ -693,7 +829,13 @@ async function downloadPdfReport() {
     if (y > 280) { doc.addPage(); y = 20; }
     const date = new Date(x.session.startedAt).toLocaleDateString("en-GB", { day: "2-digit", month: "short" });
     const mins = Math.round((x.session.endedAt - x.session.startedAt) / 60000);
-    const row = [date, x.session.mode || "study", (x.session.label || "Untitled").slice(0, 22), String(Math.round(x.summary.avgScore || 0)), String(mins)];
+    const row = [
+      date,
+      (x.session.project || "—").slice(0, 16),
+      (x.session.label || "Untitled").slice(0, 22),
+      String(Math.round(x.summary.avgScore || 0)),
+      String(mins),
+    ];
     row.forEach((cell, i) => doc.text(cell, colX[i], y));
     y += 6;
   }
@@ -738,6 +880,19 @@ exportPdfLink.addEventListener("click", () => downloadPdfReport().catch((err) =>
   console.error(err);
   alert("Could not generate PDF report: " + err.message);
 }));
+
+exportTimesheetLink.addEventListener("click", async () => {
+  const csv = await FocusDB.exportTimesheetCsv();
+  const blob = new Blob([csv], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `focus-buddy-timesheet-${new Date().toISOString().slice(0, 10)}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+});
 
 // ---------- Init ----------
 (async function init() {

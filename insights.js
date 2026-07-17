@@ -7,12 +7,16 @@
 
 const FocusInsights = (() => {
   /**
-   * @param {Array} sessions - from FocusDB.getSessions()
    * @param {Array<{session: object, summary: object}>} withSummaries -
    *   sessions paired with their FocusDB.summarize() result
+   * @param {string|null} projectFilter - if set, only sessions tagged
+   *   with this exact project string are included
    */
-  function compute(withSummaries) {
-    const completed = withSummaries.filter((x) => x.session.endedAt);
+  function compute(withSummaries, projectFilter = null) {
+    const scoped = projectFilter
+      ? withSummaries.filter((x) => (x.session.project || "") === projectFilter)
+      : withSummaries;
+    const completed = scoped.filter((x) => x.session.endedAt);
     if (!completed.length) {
       return {
         totalSessions: 0, totalMinutes: 0, allTimeAvg: 0, streak: 0,
@@ -96,5 +100,36 @@ const FocusInsights = (() => {
     };
   }
 
-  return { compute };
+  /** Distinct project tags across all sessions, sorted, for a filter dropdown. */
+  function listProjects(withSummaries) {
+    const set = new Set();
+    for (const x of withSummaries) {
+      if (x.session.project) set.add(x.session.project);
+    }
+    return Array.from(set).sort();
+  }
+
+  /**
+   * Plain-text share-safe summary for one session — the "copy as email"
+   * format. Deliberately excludes granular signals (phone/eyes/talking/
+   * movement/tab-switch breakdown); includes only what's appropriate to
+   * hand to someone else: title, project, duration, and one overall
+   * engagement number.
+   */
+  function formatRedactedSummary(session, summary) {
+    const date = new Date(session.startedAt).toLocaleDateString("en-GB", {
+      day: "2-digit", month: "short", year: "numeric",
+    });
+    const mins = session.endedAt ? Math.round((session.endedAt - session.startedAt) / 60000) : null;
+    const lines = [
+      `Meeting: ${session.label || "Untitled"}`,
+      session.project ? `Project: ${session.project}` : null,
+      `Date: ${date}`,
+      mins !== null ? `Duration: ${mins} min` : null,
+      summary && summary.n ? `Engagement: ${Math.round(summary.avgScore)}/100` : null,
+    ].filter(Boolean);
+    return lines.join("\n");
+  }
+
+  return { compute, listProjects, formatRedactedSummary };
 })();

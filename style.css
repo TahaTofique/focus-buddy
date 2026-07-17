@@ -423,6 +423,16 @@ body {
   .controls { grid-template-columns: 1fr 1fr; }
 }
 
+.controls-row2 {
+  display: grid;
+  grid-template-columns: 1fr 2fr;
+  gap: 12px;
+  margin-top: 12px;
+}
+@media (max-width: 640px) {
+  .controls-row2 { grid-template-columns: 1fr; }
+}
+
 .field {
   display: flex;
   flex-direction: column;
@@ -433,6 +443,28 @@ body {
   font-weight: 600;
   color: var(--text-dim);
 }
+.label-optional {
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+textarea {
+  background: var(--bg);
+  border: 1.5px solid var(--border);
+  color: var(--text);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  outline: none;
+  resize: vertical;
+  min-height: 38px;
+  transition: border-color 0.15s ease;
+}
+textarea:focus { border-color: var(--accent-1); }
+textarea::placeholder { color: var(--text-faint); }
+textarea:disabled { opacity: 0.6; }
 
 input, select {
   background: var(--bg);
@@ -588,6 +620,18 @@ input:disabled, select:disabled { opacity: 0.55; }
 }
 .history-mode-chip.study { background: var(--blue-bg); color: var(--blue); }
 .history-mode-chip.meeting { background: var(--violet-bg); color: var(--violet); }
+.history-mode-chip.attendance { background: var(--teal-bg); color: var(--teal); }
+
+.history-project {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-faint);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 2px 7px;
+  border-radius: 100px;
+  flex-shrink: 0;
+}
 
 .history-main {
   flex: 1;
@@ -599,10 +643,41 @@ input:disabled, select:disabled { opacity: 0.55; }
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.history-notes-icon {
+  flex-shrink: 0;
+  color: var(--text-faint);
+  cursor: help;
 }
 .history-date {
   font-size: 11px;
   color: var(--text-faint);
+}
+
+.history-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-shrink: 0;
+}
+.history-copy-btn {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-faint);
+  border-radius: 8px;
+  width: 26px; height: 26px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+.history-copy-btn:hover { color: var(--accent-1); border-color: var(--accent-1); }
+
+.project-filter {
+  font-size: 12px;
+  padding: 6px 10px;
 }
 
 .history-score {

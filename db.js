@@ -65,6 +65,90 @@ const FocusDB = (() => {
     });
   }
 
+  /**
+   * Full local backup — every session, every per-second tick, and every
+   * setting (calibration, templates, theme is in localStorage so it's
+   * not included here). Downloadable as JSON, re-importable via
+   * restoreBackup(). This is the answer to "what if I clear my browser
+   * data" — everything otherwise lives only in this one IndexedDB.
+   */
+  async function exportBackup() {
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["sessions", "ticks", "settings"], "readonly");
+      const sessionsReq = tx.objectStore("sessions").getAll();
+      const ticksReq = tx.objectStore("ticks").getAll();
+      const settingsKeysReq = tx.objectStore("settings").getAllKeys();
+      const settingsValsReq = tx.objectStore("settings").getAll();
+      tx.oncomplete = () => {
+        const settings = {};
+        settingsKeysReq.result.forEach((k, i) => { settings[k] = settingsValsReq.result[i]; });
+        resolve({
+          app: "focus-buddy",
+          version: 1,
+          exportedAt: new Date().toISOString(),
+          sessions: sessionsReq.result,
+          ticks: ticksReq.result,
+          settings,
+        });
+      };
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /**
+   * Restores a backup produced by exportBackup(). This REPLACES all
+   * current sessions/ticks/settings — it's a restore, not a merge, so
+   * the caller should confirm with the user before calling this.
+   * Explicit "id" keys on session/tick records are preserved (IndexedDB
+   * accepts an explicit key on an autoIncrement store and advances its
+   * internal counter past it), which keeps tick→session references intact.
+   */
+  async function restoreBackup(data) {
+    if (!data || typeof data !== "object" || !Array.isArray(data.sessions) || !Array.isArray(data.ticks)) {
+      throw new Error("This doesn't look like a Focus Buddy backup file.");
+    }
+    const db = await open();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(["sessions", "ticks", "settings"], "readwrite");
+      const sessionsStore = tx.objectStore("sessions");
+      const ticksStore = tx.objectStore("ticks");
+      const settingsStore = tx.objectStore("settings");
+      sessionsStore.clear();
+      ticksStore.clear();
+      settingsStore.clear();
+      for (const s of data.sessions) sessionsStore.put(s);
+      for (const t of data.ticks) ticksStore.put(t);
+      if (data.settings) {
+        for (const [k, v] of Object.entries(data.settings)) settingsStore.put(v, k);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  /** Session templates: saved {name, label, project, mode, duration} presets. */
+  async function getTemplates() {
+    const templates = await getSetting("templates");
+    return Array.isArray(templates) ? templates : [];
+  }
+
+  async function saveTemplate(template) {
+    const templates = await getTemplates();
+    const existingIdx = templates.findIndex((t) => t.name === template.name);
+    if (existingIdx >= 0) templates[existingIdx] = template;
+    else templates.push(template);
+    await setSetting("templates", templates);
+    return templates;
+  }
+
+  async function deleteTemplate(name) {
+    const templates = await getTemplates();
+    const filtered = templates.filter((t) => t.name !== name);
+    await setSetting("templates", filtered);
+    return filtered;
+  }
+
   async function startSession(label, mode = "study", project = "") {
     const db = await open();
     return new Promise((resolve, reject) => {
@@ -259,5 +343,6 @@ const FocusDB = (() => {
   return {
     startSession, endSession, updateSession, logTick, getSessions, getTicks, summarize, clearAll,
     exportCsv, exportTimesheetCsv, setSetting, getSetting, deleteSetting,
+    exportBackup, restoreBackup, getTemplates, saveTemplate, deleteTemplate,
   };
 })();

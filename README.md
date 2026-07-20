@@ -99,6 +99,41 @@ same insight stats, the trend chart as an embedded image, and a table
 of your 25 most recent sessions. Useful for attaching to a portfolio
 writeup or handing in as engagement evidence for a course.
 
+## Backup, restore, and session templates
+
+- **Backup / Restore** (footer links) — a full local backup as a
+  downloadable JSON file: every session, every per-second tick, and
+  every setting (including saved calibration). "Restore" loads a
+  backup file back in — this **replaces** current local data, so
+  it asks for confirmation first. This is the actual answer to "what
+  if I clear my browser data by accident" — otherwise everything
+  lives only in this one IndexedDB, in this one browser.
+- **Session templates** — save the current label/project/mode/duration
+  as a named preset ("Save as template"), then reload it with one
+  click from the dropdown next time — useful for a recurring meeting
+  you track every day rather than retyping the same fields.
+
+## Break reminders & notifications
+
+Two triggers, both toggleable via "Break reminders" in session
+options (on by default):
+
+- **Time-based** — a reminder every 25 minutes of continuous session,
+  regardless of score.
+- **Low-focus-based** — if your rolling average score stays below 45
+  for a sustained ~3 minutes, a reminder fires once (not repeatedly)
+  suggesting a break. A brief dip doesn't trigger it — it has to be
+  sustained across the whole window.
+
+Reminders show as a dismissible in-app banner, and — if you grant
+permission when asked — also as a native browser notification, so
+you'll see it even if you've switched away from the tab. Notification
+permission is requested only when you start a session with reminders
+enabled, never on page load.
+
+**Keyboard shortcut**: press `Space` to start or stop a session,
+whenever focus isn't inside a text field.
+
 ## Sharing with someone else (redacted reports, copy-as-email)
 
 Anything shareable here is something **you** choose to generate and
@@ -241,7 +276,7 @@ scorer.js    — focus score logic (mode-aware multi-signal weighting)
 signals.js   — eye/talking/movement/phone heuristics, calibration, hysteresis
 insights.js  — cross-session aggregate stats + redacted summary formatting
 db.js        — IndexedDB storage (sessions incl. project/notes, ticks, settings)
-              + CSV export + timesheet CSV export
+              + CSV/timesheet export + full JSON backup/restore + templates
 ```
 
 ## Tuning
@@ -290,8 +325,6 @@ vs `meeting` mode. Change these directly to retune either mode.
 
 ## Possible extensions
 
-- Persist calibration across sessions (with a "recalibrate" option)
-- Break reminders after sustained low focus/engagement
 - PWA manifest + service worker for offline model caching
 - Swap the phone heuristic for a real object-detection model
 - Picture-in-picture mode so the score stays visible while the actual

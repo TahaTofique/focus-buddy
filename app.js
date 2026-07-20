@@ -28,6 +28,9 @@ const CALIBRATED_YAW_THRESHOLD_RAD = 0.30;   // ~17°, tighter once baseline is 
 const CALIBRATED_PITCH_THRESHOLD_RAD = 0.26; // ~15°
 const FACE_ABSENT_GRACE_MS = 1800;  // brief occlusion/tracking loss tolerance before it counts as "gone"
 const STEPPED_AWAY_MS = 12000;      // sustained absence beyond this -> distinct "Stepped away" label
+const BREAK_INTERVAL_MS = 25 * 60000;   // time-based reminder cadence
+const LOW_FOCUS_THRESHOLD = 45;         // rolling avg score below this triggers a reminder
+const LOW_FOCUS_WINDOW_SEC = 180;       // sustained for this many seconds (at 1 sample/sec) before it fires
 
 const humanConfig = {
   modelBasePath: "https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/models/",
@@ -118,6 +121,16 @@ const attendanceTimerEl = document.getElementById("attendance-timer");
 const redactedModeCb = document.getElementById("redacted-mode");
 const insightsProjectFilter = document.getElementById("insights-project-filter");
 const exportTimesheetLink = document.getElementById("export-timesheet");
+const templateSelect = document.getElementById("template-select");
+const saveTemplateBtn = document.getElementById("save-template-btn");
+const deleteTemplateBtn = document.getElementById("delete-template-btn");
+const breakReminder = document.getElementById("break-reminder");
+const breakReminderText = document.getElementById("break-reminder-text");
+const breakReminderDismiss = document.getElementById("break-reminder-dismiss");
+const breakRemindersToggle = document.getElementById("break-reminders-toggle");
+const backupDataLink = document.getElementById("backup-data");
+const restoreDataLink = document.getElementById("restore-data");
+const restoreFileInput = document.getElementById("restore-file-input");
 
 const RING_CIRCUMFERENCE = 2 * Math.PI * 52;   // r=52, matches SVG
 const CALIB_CIRCUMFERENCE = 2 * Math.PI * 34;  // r=34, matches SVG
@@ -163,6 +176,52 @@ themeToggle.addEventListener("click", () => {
   const next = current === "dark" ? "light" : "dark";
   document.documentElement.dataset.theme = next;
   localStorage.setItem("focusbuddy-theme", next);
+});
+
+// ---------- Session templates ----------
+async function refreshTemplateOptions() {
+  const templates = await FocusDB.getTemplates();
+  const current = templateSelect.value;
+  templateSelect.innerHTML = '<option value="">Load template…</option>' +
+    templates.map((t) => `<option value="${escapeHtml(t.name)}">${escapeHtml(t.name)}</option>`).join("");
+  if (templates.some((t) => t.name === current)) templateSelect.value = current;
+  deleteTemplateBtn.disabled = !templateSelect.value;
+}
+
+templateSelect.addEventListener("change", async () => {
+  deleteTemplateBtn.disabled = !templateSelect.value;
+  if (!templateSelect.value) return;
+  const templates = await FocusDB.getTemplates();
+  const t = templates.find((x) => x.name === templateSelect.value);
+  if (!t) return;
+  labelInput.value = t.label || "";
+  sessionProject.value = t.project || "";
+  modeSelect.value = t.mode || "study";
+  durationSelect.value = String(t.duration ?? 25);
+  applyModeUI();
+});
+
+saveTemplateBtn.addEventListener("click", async () => {
+  const defaultName = labelInput.value.trim() || "Untitled template";
+  const name = prompt("Template name:", defaultName);
+  if (!name) return;
+  await FocusDB.saveTemplate({
+    name: name.trim(),
+    label: labelInput.value.trim(),
+    project: sessionProject.value.trim(),
+    mode: modeSelect.value,
+    duration: durationSelect.value,
+  });
+  await refreshTemplateOptions();
+  templateSelect.value = name.trim();
+  deleteTemplateBtn.disabled = false;
+});
+
+deleteTemplateBtn.addEventListener("click", async () => {
+  if (!templateSelect.value) return;
+  if (!confirm(`Delete template "${templateSelect.value}"?`)) return;
+  await FocusDB.deleteTemplate(templateSelect.value);
+  await refreshTemplateOptions();
 });
 
 // ---------- Clock ----------
@@ -454,6 +513,57 @@ async function detectLoop() {
 // Single canonical scoring/logging tick — runs on a plain setInterval
 // (not rAF) so it keeps firing even while the tab is hidden, which is
 // exactly the period we need to capture in meeting mode.
+// ---------- Break reminders ----------
+let breakIntervalTimer = null;
+let recentScores = [];
+let lowFocusReminderShown = false;
+
+async function ensureNotificationPermission() {
+  if (!("Notification" in window)) return;
+  if (Notification.permission === "default") {
+    try { await Notification.requestPermission(); } catch (err) { /* ignore — banner still works without it */ }
+  }
+}
+
+function showBreakReminder(text) {
+  breakReminderText.textContent = text;
+  breakReminder.classList.remove("hidden");
+  if ("Notification" in window && Notification.permission === "granted") {
+    try { new Notification("Focus Buddy", { body: text }); } catch (err) { /* ignore */ }
+  }
+}
+
+breakReminderDismiss.addEventListener("click", () => breakReminder.classList.add("hidden"));
+
+function checkLowFocusReminder(score) {
+  if (!breakRemindersToggle.checked || lowFocusReminderShown) return;
+  recentScores.push(score);
+  if (recentScores.length > LOW_FOCUS_WINDOW_SEC) recentScores.shift();
+  if (recentScores.length >= LOW_FOCUS_WINDOW_SEC) {
+    const avg = recentScores.reduce((a, b) => a + b, 0) / recentScores.length;
+    if (avg < LOW_FOCUS_THRESHOLD) {
+      lowFocusReminderShown = true;
+      showBreakReminder("Focus has been low for a few minutes — might be a good time for a short break.");
+    }
+  }
+}
+
+function startBreakReminders() {
+  recentScores = [];
+  lowFocusReminderShown = false;
+  breakReminder.classList.add("hidden");
+  if (!breakRemindersToggle.checked) return;
+  ensureNotificationPermission();
+  breakIntervalTimer = setInterval(() => {
+    showBreakReminder("You've been at this a while — consider a short break.");
+  }, BREAK_INTERVAL_MS);
+}
+
+function stopBreakReminders() {
+  if (breakIntervalTimer) { clearInterval(breakIntervalTimer); breakIntervalTimer = null; }
+  breakReminder.classList.add("hidden");
+}
+
 let scoreTickInterval = null;
 let activeMode = null;
 let attendanceTimerInterval = null;
@@ -463,6 +573,7 @@ function scoreTick() {
   const signals = { ...lastFaceSignals, tabAway };
   const score = scorer.update(signals);
   updateScoreDisplay(score);
+  checkLowFocusReminder(score);
 
   if (currentSessionId) {
     FocusDB.logTick(currentSessionId, signals, score).catch((e) => console.error(e));
@@ -517,6 +628,7 @@ async function startSession() {
     attendanceStartTime = Date.now();
     updateAttendanceTimer();
     attendanceTimerInterval = setInterval(updateAttendanceTimer, 1000);
+    startBreakReminders();
 
     const durationMin = parseFloat(durationSelect.value);
     if (durationMin > 0) sessionTimer = setTimeout(stopSession, durationMin * 60000);
@@ -570,6 +682,7 @@ async function startSession() {
 
   detectLoop();
   scoreTickInterval = setInterval(scoreTick, LOG_INTERVAL_MS);
+  startBreakReminders();
 }
 
 function updateAttendanceTimer() {
@@ -584,6 +697,7 @@ async function stopSession() {
   if (sessionTimer) clearTimeout(sessionTimer);
   if (scoreTickInterval) clearInterval(scoreTickInterval);
   if (attendanceTimerInterval) { clearInterval(attendanceTimerInterval); attendanceTimerInterval = null; }
+  stopBreakReminders();
 
   if (activeMode !== "attendance") {
     stopWebcam();
@@ -853,11 +967,12 @@ startBtn.addEventListener("click", () => startSession().catch((err) => {
 stopBtn.addEventListener("click", () => stopSession());
 
 clearDataLink.addEventListener("click", async () => {
-  if (!confirm("This will permanently delete all locally stored session data, including any saved calibration. Continue?")) return;
+  if (!confirm("This will permanently delete all locally stored session data, including any saved calibration and templates. Continue?")) return;
   await FocusDB.clearAll();
   await refreshHistory();
   await refreshInsights();
   await refreshCalibrationStatus();
+  await refreshTemplateOptions();
   mAvg.textContent = mPresent.textContent = mLooking.textContent = mPhone.textContent = "--";
   mEyes.textContent = mTalking.textContent = mMovement.textContent = mTabAway.textContent = "--";
   mAway.textContent = "--";
@@ -894,6 +1009,60 @@ exportTimesheetLink.addEventListener("click", async () => {
   URL.revokeObjectURL(url);
 });
 
+// ---------- Backup / restore ----------
+backupDataLink.addEventListener("click", async () => {
+  try {
+    const backup = await FocusDB.exportBackup();
+    const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `focus-buddy-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error(err);
+    alert("Could not create backup: " + err.message);
+  }
+});
+
+restoreDataLink.addEventListener("click", () => restoreFileInput.click());
+
+restoreFileInput.addEventListener("change", async () => {
+  const file = restoreFileInput.files[0];
+  restoreFileInput.value = ""; // allow re-selecting the same file later
+  if (!file) return;
+  if (!confirm("This will REPLACE all current local data with the contents of this backup file. Continue?")) return;
+  try {
+    const text = await file.text();
+    const data = JSON.parse(text);
+    await FocusDB.restoreBackup(data);
+    await refreshHistory();
+    await refreshInsights();
+    await refreshCalibrationStatus();
+    await refreshTemplateOptions();
+    alert("Backup restored successfully.");
+  } catch (err) {
+    console.error(err);
+    alert("Could not restore backup: " + err.message);
+  }
+});
+
+// ---------- Keyboard shortcut ----------
+document.addEventListener("keydown", (e) => {
+  if (e.code !== "Space") return;
+  const tag = document.activeElement?.tagName;
+  if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+  e.preventDefault();
+  if (running) {
+    if (!stopBtn.disabled) stopBtn.click();
+  } else if (!startBtn.disabled) {
+    startBtn.click();
+  }
+});
+
 // ---------- Init ----------
 (async function init() {
   initChart();
@@ -904,4 +1073,5 @@ exportTimesheetLink.addEventListener("click", async () => {
   await refreshHistory();
   await refreshInsights();
   await refreshCalibrationStatus();
+  await refreshTemplateOptions();
 })();

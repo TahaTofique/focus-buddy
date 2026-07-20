@@ -207,6 +207,79 @@ body {
   font-size: 11px;
 }
 
+/* ---------- Session templates ---------- */
+.template-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.template-row select {
+  flex: 1;
+  font-size: 12px;
+  padding: 8px 10px;
+}
+
+.btn-ghost {
+  background: var(--bg);
+  color: var(--text-dim);
+  border: 1.5px solid var(--border);
+  font-size: 12px;
+  padding: 8px 14px;
+}
+.btn-ghost:hover:not(:disabled) { border-color: var(--accent-1); color: var(--accent-1); }
+
+.btn-ghost-icon {
+  background: var(--bg);
+  color: var(--text-faint);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  width: 34px; height: 34px;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all 0.15s ease;
+}
+.btn-ghost-icon:hover:not(:disabled) { color: var(--red); border-color: var(--red); }
+.btn-ghost-icon:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ---------- Break reminder banner ---------- */
+.break-reminder {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: var(--amber-bg);
+  color: var(--amber);
+  border-radius: var(--radius-sm);
+  padding: 10px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  margin-top: 14px;
+}
+.break-reminder svg { flex-shrink: 0; }
+.break-reminder span { flex: 1; }
+.break-dismiss {
+  background: none;
+  border: none;
+  color: var(--amber);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+  opacity: 0.7;
+}
+.break-dismiss:hover { opacity: 1; }
+
+kbd {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-family: var(--font-body);
+  font-size: 11px;
+  font-weight: 600;
+}
+
 /* ---------- Layout ---------- */
 .layout {
   position: relative;

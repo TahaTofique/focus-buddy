@@ -53,6 +53,16 @@
       <span id="model-status" class="pill pill-loading">Loading models…</span>
     </div>
 
+    <div class="template-row">
+      <select id="template-select">
+        <option value="">Load template…</option>
+      </select>
+      <button id="save-template-btn" type="button" class="btn btn-ghost">Save as template</button>
+      <button id="delete-template-btn" type="button" class="btn btn-ghost-icon" title="Delete selected template" disabled>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2m3 0-1 14a2 2 0 01-2 2H7a2 2 0 01-2-2L4 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+    </div>
+
     <div class="cam-frame">
       <video id="video" autoplay muted playsinline></video>
       <canvas id="overlay"></canvas>
@@ -101,6 +111,12 @@
           <p class="calib-sub">Attendance-only mode — no camera or engagement scoring, just a timestamped duration log.</p>
         </div>
       </div>
+    </div>
+
+    <div id="break-reminder" class="break-reminder hidden">
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 8v5M12 16h.01M10.3 3.9L2.5 17a2 2 0 001.7 3h15.6a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      <span id="break-reminder-text"></span>
+      <button id="break-reminder-dismiss" class="break-dismiss" title="Dismiss">×</button>
     </div>
 
     <div class="controls">
@@ -162,7 +178,12 @@
         <input type="checkbox" id="redacted-mode">
         <span>Redacted exports (share-safe — summary only, no signal breakdown)</span>
       </label>
+      <label class="option-toggle">
+        <input type="checkbox" id="break-reminders-toggle" checked>
+        <span>Break reminders</span>
+      </label>
     </div>
+    <p class="hint">Press <kbd>Space</kbd> to start/stop a session (while not typing in a field).</p>
   </section>
 
   <!-- RIGHT: Stats + history -->
@@ -293,7 +314,11 @@
 </main>
 
 <footer class="footer">
-  Stored locally in this browser only · <span id="clear-data" class="link">Clear all data</span>
+  Stored locally in this browser only ·
+  <span id="clear-data" class="link">Clear all data</span> ·
+  <span id="backup-data" class="link">Backup</span> ·
+  <span id="restore-data" class="link">Restore</span>
+  <input type="file" id="restore-file-input" accept="application/json" class="hidden">
 </footer>
 
 <script src="https://cdn.jsdelivr.net/npm/@vladmandic/human@3.3.6/dist/human.js"></script>

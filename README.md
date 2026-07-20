@@ -297,6 +297,33 @@ comments for the exact multipliers.
 `MODE_WEIGHTS` in `scorer.js` — separate penalty numbers for `study`
 vs `meeting` mode. Change these directly to retune either mode.
 
+## Testing notes
+
+This app has been tested end-to-end in a real headless Chromium
+browser (Playwright) against real IndexedDB — session lifecycle,
+notes autosave, project tagging, templates, dark mode persistence,
+backup/restore round trips (including verifying tick→session
+relationships survive), the Insights project filter, and the
+copy-summary clipboard feature all passed with zero uncaught errors.
+
+That testing also caught and fixed a real bug: if any of the CDN
+scripts (Human.js, Chart.js, jsPDF) fail to load — a blocked domain,
+an ad-blocker, a slow network — the app used to crash its entire
+initialization sequence, leaving History, Insights, Templates, and
+calibration status permanently blank even though none of them
+actually depend on those libraries. It's fixed now: each part of
+initialization is isolated, charts hide gracefully if unavailable,
+and **Attendance-only mode works completely independently of the
+CDN scripts** — it never needed Human.js or Chart.js in the first
+place, so it stays usable even if the network blocks them entirely.
+
+**What real browser testing could not cover**: actual face/hand
+detection against a live camera and a real face. Headless testing
+uses a synthetic fake video device with no face to detect, so the
+calibration flow, the eye/talking/movement/phone heuristics, and the
+live detection loop itself still need a real run on your own machine
+before you rely on them.
+
 ## Known limitations (worth noting in a report/viva)
 
 - Phone detection is a hand-near-face heuristic, not real object

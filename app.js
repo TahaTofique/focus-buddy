@@ -275,22 +275,30 @@ function pushChartPoint(score) {
     chartLabels.shift();
     chartData.shift();
   }
-  liveChart.update("none");
+  if (liveChart) liveChart.update("none");
 }
 
 // ---------- Model init ----------
+let modelsReady = false;
+
+function timeout(ms, label) {
+  return new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms));
+}
+
 async function initModels() {
   try {
     human = new Human.Human(humanConfig);
-    await human.load();
-    await human.warmup();
+    await Promise.race([human.load(), timeout(20000, "Model load")]);
+    await Promise.race([human.warmup(), timeout(20000, "Model warmup")]);
     modelStatus.textContent = "Models ready";
     modelStatus.className = "pill pill-ready";
     startBtn.disabled = false;
+    modelsReady = true;
   } catch (err) {
     console.error("Model load failed:", err);
-    modelStatus.textContent = "Model load failed";
+    modelStatus.textContent = "Detection unavailable (Attendance-only still works)";
     modelStatus.className = "pill pill-error";
+    startBtn.disabled = false; // still allow attendance-only mode, checked at click time below
   }
 }
 
@@ -609,6 +617,12 @@ function applyStateBadge(signals) {
 // ---------- Session control ----------
 async function startSession() {
   const mode = modeSelect.value;
+
+  if (mode !== "attendance" && !modelsReady) {
+    alert("Detection models haven't loaded (likely a network issue). Attendance-only mode still works without them — switch modes to use it, or reload the page to retry.");
+    return;
+  }
+
   activeMode = mode;
   const project = sessionProject.value.trim();
 
@@ -664,7 +678,7 @@ async function startSession() {
   tabAway = document.hidden;
   chartLabels.length = 0;
   chartData.length = 0;
-  liveChart.update("none");
+  if (liveChart) liveChart.update("none");
 
   running = true;
   stopBtn.disabled = false;
@@ -874,9 +888,11 @@ async function refreshInsights() {
     inHighlight.textContent = "Log a few sessions to see patterns here.";
   }
 
-  trendChart.data.labels = insights.trend.map((_, i) => i);
-  trendChart.data.datasets[0].data = insights.trend;
-  trendChart.update("none");
+  if (trendChart) {
+    trendChart.data.labels = insights.trend.map((_, i) => i);
+    trendChart.data.datasets[0].data = insights.trend;
+    trendChart.update("none");
+  }
 }
 insightsProjectFilter.addEventListener("change", () => refreshInsights());
 
@@ -1065,13 +1081,27 @@ document.addEventListener("keydown", (e) => {
 
 // ---------- Init ----------
 (async function init() {
-  initChart();
-  initTrendChart();
+  // Pure DOM setup — no external dependencies, always safe.
   applyModeUI();
-  startBtn.disabled = true;
-  await initModels();
-  await refreshHistory();
-  await refreshInsights();
-  await refreshCalibrationStatus();
-  await refreshTemplateOptions();
+
+  // Charts are a nice-to-have, not load-bearing — if Chart.js fails to
+  // load (blocked CDN, offline, ad-blocker), hide the chart areas and
+  // keep going. Every other feature (history, insights numbers, session
+  // tracking itself) works completely fine without them.
+  try {
+    initChart();
+    initTrendChart();
+  } catch (err) {
+    console.error("Chart.js unavailable, continuing without charts:", err);
+    document.querySelector(".chart-wrap")?.classList.add("hidden");
+    document.querySelector(".sparkline-wrap")?.classList.add("hidden");
+  }
+
+  // Each of these touches its own DOM region and has no dependency on
+  // the others — isolate them so one failure doesn't blank the rest.
+  await initModels().catch((err) => console.error("initModels:", err));
+  await refreshHistory().catch((err) => console.error("refreshHistory:", err));
+  await refreshInsights().catch((err) => console.error("refreshInsights:", err));
+  await refreshCalibrationStatus().catch((err) => console.error("refreshCalibrationStatus:", err));
+  await refreshTemplateOptions().catch((err) => console.error("refreshTemplateOptions:", err));
 })();
